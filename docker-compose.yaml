@@ -1,0 +1,107 @@
+services:
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=no
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=analysis
+      - DB_USER=user
+      - DB_PASSWORD=password
+    depends_on:
+      - db
+    networks:
+      - analysis-network
+
+  nextjs:
+    build:
+      context: ./nextjs-app
+      dockerfile: Dockerfile.nextjs
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./nextjs-app:/app
+      - /app/node_modules
+      - ./data:/app/data:ro  # データフォルダを読み取り専用でマウント
+    environment:
+      - NODE_ENV=development
+      - JUPYTER_API_URL=http://jupyter:8888
+      - PYTHON_API_URL=http://python-api:8000
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=analysis
+      - DB_USER=user
+      - DB_PASSWORD=password
+    depends_on:
+      - jupyter
+      - python-api
+      - db
+    networks:
+      - analysis-network
+    command: npm run dev
+
+  python-api:
+    build:
+      context: ./python-api
+      dockerfile: Dockerfile.python-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./python-api:/app
+      - ./data:/app/data
+      - ./notebooks:/app/notebooks:ro
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=analysis
+      - DB_USER=user
+      - DB_PASSWORD=password
+    depends_on:
+      - db
+    networks:
+      - analysis-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    image: postgres:14
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=user
+      - POSTGRES_DB=analysis
+    ports:
+      - "5432:5432"
+    networks:
+      - analysis-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=user@example.com
+      - PGADMIN_DEFAULT_PASSWORD=password
+      - PGADMIN_LISTEN_PORT=80
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+    networks:
+      - analysis-network
+    restart: unless-stopped
+
+volumes:
+  notebooks:
+  data:
+  postgres_data:
+
+networks:
+  analysis-network:
+    driver: bridge
