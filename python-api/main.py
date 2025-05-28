@@ -32,6 +32,7 @@ app.add_middleware(
 # ルーターを登録
 app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(sessions.router)  # prefixなしでも登録（既存コード互換性のため）
 
 
 @app.get("/")
