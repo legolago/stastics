@@ -2,10 +2,53 @@ from typing import Dict, Any
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm  # この行を追加！
 import matplotlib.patheffects as pe
+import japanize_matplotlib
 import prince
 from scipy.spatial import distance_matrix
 from .base import BaseAnalyzer
+
+
+# 日本語フォント設定関数
+def setup_japanese_font():
+    """日本語フォントを設定"""
+    try:
+        # 利用可能なフォントを確認
+        available_fonts = [f.name for f in fm.fontManager.ttflist]
+        ipa_fonts = [f for f in available_fonts if "IPA" in f or "Gothic" in f]
+        print("Available IPA fonts:", ipa_fonts)
+
+        # フォント設定を強制的に適用
+        plt.rcParams.update(
+            {
+                "font.family": ["IPAexGothic", "IPAGothic", "sans-serif"],
+                "axes.unicode_minus": False,
+                "font.size": 12,
+            }
+        )
+
+        # フォントキャッシュをクリア（新しい方法）
+        fm.fontManager.__init__()
+
+        # 設定されたフォントを確認
+        current_font = plt.rcParams["font.family"]
+        print(f"Font family set to: {current_font}")
+
+        # テスト用の日本語描画
+        test_fig, test_ax = plt.subplots(figsize=(1, 1))
+        test_ax.text(0.5, 0.5, "テスト", fontsize=12)
+        plt.close(test_fig)
+
+        print("Japanese font setup completed successfully")
+
+    except Exception as e:
+        print(f"Font setup error: {e}")
+        # フォールバック: japanize_matplotlibに完全に依存
+        import japanize_matplotlib
+
+        plt.rcParams["axes.unicode_minus"] = False
+        print("Using japanize_matplotlib as fallback")
 
 
 class CorrespondenceAnalyzer(BaseAnalyzer):
@@ -50,6 +93,19 @@ class CorrespondenceAnalyzer(BaseAnalyzer):
 
     def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
         """コレスポンデンス分析のプロットを作成"""
+        # 日本語フォント設定を最初に適用
+        import japanize_matplotlib  # 確実に日本語フォントを設定
+
+        plt.rcParams.update(
+            {
+                "font.family": ["IPAexGothic", "IPAGothic", "sans-serif"],
+                "axes.unicode_minus": False,
+                "font.size": 12,
+            }
+        )
+
+        setup_japanese_font()  # 追加の設定
+
         row_coords = results["row_coordinates"]
         col_coords = results["column_coordinates"]
         explained_inertia = results["explained_inertia"]
@@ -84,13 +140,25 @@ class CorrespondenceAnalyzer(BaseAnalyzer):
         colors = {"イメージ": "#3498db", "ブランド": "#e74c3c"}
         markers = {"イメージ": "o", "ブランド": "D"}
 
-        # タイトルと軸ラベル
-        plt.title("コレスポンデンス分析", fontsize=18, fontweight="bold", pad=20)
+        # タイトルと軸ラベル（日本語）- フォントを明示的に指定
+        plt.title(
+            "ファッションブランドとイメージのコレスポンデンス分析",
+            fontsize=18,
+            fontweight="bold",
+            pad=20,
+            fontfamily=["IPAexGothic", "IPAGothic", "sans-serif"],
+        )
         plt.xlabel(
-            f"第1次元 ({explained_inertia[0]:.1%} の寄与率)", fontsize=14, labelpad=10
+            f"第1次元 ({explained_inertia[0]:.1%} の寄与率)",
+            fontsize=14,
+            labelpad=10,
+            fontfamily=["IPAexGothic", "IPAGothic", "sans-serif"],
         )
         plt.ylabel(
-            f"第2次元 ({explained_inertia[1]:.1%} の寄与率)", fontsize=14, labelpad=10
+            f"第2次元 ({explained_inertia[1]:.1%} の寄与率)",
+            fontsize=14,
+            labelpad=10,
+            fontfamily=["IPAexGothic", "IPAGothic", "sans-serif"],
         )
 
         # 原点の軸線
@@ -134,7 +202,7 @@ class CorrespondenceAnalyzer(BaseAnalyzer):
                         zorder=1,
                     )
 
-                # テキストを境界線付きで表示
+                # テキストを境界線付きで表示 - フォントを明示的に指定
                 plt.text(
                     label_x,
                     label_y,
@@ -145,10 +213,11 @@ class CorrespondenceAnalyzer(BaseAnalyzer):
                     weight="bold",
                     color="black",
                     zorder=5,
+                    fontfamily=["IPAexGothic", "IPAGothic", "sans-serif"],
                     path_effects=[pe.withStroke(linewidth=3, foreground="white")],
                 )
 
-        # 凡例
+        # 凡例 - フォントを明示的に指定
         legend = plt.legend(
             title="タイプ",
             fontsize=12,
@@ -157,8 +226,10 @@ class CorrespondenceAnalyzer(BaseAnalyzer):
             frameon=True,
             framealpha=0.9,
             edgecolor="gray",
+            prop={"family": ["IPAexGothic", "IPAGothic", "sans-serif"]},
         )
         legend.get_frame().set_linewidth(0.8)
+        legend.get_title().set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
 
         # 情報ボックス
         total_inertia = sum(results["explained_inertia"][:2])

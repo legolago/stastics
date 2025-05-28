@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+
 matplotlib.use("Agg")
 import seaborn as sns
 import japanize_matplotlib
@@ -82,7 +83,42 @@ class BaseAnalyzer(ABC):
         }
 
     def save_plot_as_base64(self, fig) -> str:
-        """MatplotlibのfigureをBase64文字列として保存"""
+        """プロットをBase64エンコードした文字列として保存"""
+
+        # 図を保存する前に日本語フォントを強制設定
+        import japanize_matplotlib
+
+        plt.rcParams.update(
+            {
+                "font.family": ["IPAexGothic", "IPAGothic", "sans-serif"],
+                "axes.unicode_minus": False,
+            }
+        )
+
+        # 既存の全てのテキストオブジェクトのフォントを更新
+        for ax in fig.get_axes():
+            for text in ax.get_children():
+                if hasattr(text, "set_fontfamily"):
+                    text.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+
+            # タイトル、軸ラベル、凡例のフォントを明示的に設定
+            ax.title.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+            ax.xaxis.label.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+            ax.yaxis.label.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+
+            # 軸の目盛りラベル
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+
+            # 凡例
+            legend = ax.get_legend()
+            if legend:
+                for text in legend.get_texts():
+                    text.set_fontfamily(["IPAexGothic", "IPAGothic", "sans-serif"])
+                legend.get_title().set_fontfamily(
+                    ["IPAexGothic", "IPAGothic", "sans-serif"]
+                )
+
         buffer = io.BytesIO()
         fig.savefig(
             buffer,
