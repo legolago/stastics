@@ -4,23 +4,28 @@ import { NextRequest, NextResponse } from 'next/server';
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://python-api:8000';
 
 interface RouteParams {
-  params: {
+  params: Promise<{
     id: string;
-  };
+  }>;
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
-    const sessionId = params.id;
+    const { id: sessionId } = await params;
     
-    // Python APIから画像を取得
-    const response = await fetch(`${PYTHON_API_URL}/sessions/${sessionId}/image`);
+    console.log(`Fetching image for session: ${sessionId}`);
+    
+    // 直接セッションのイメージエンドポイントを使用
+    const imageUrl = `${PYTHON_API_URL}/sessions/${sessionId}/image`;
+    console.log(`Fetching image from: ${imageUrl}`);
+    
+    const response = await fetch(imageUrl);
     
     if (!response.ok) {
       const errorText = await response.text();
       console.error('Python API Error:', errorText);
       return NextResponse.json(
-        { error: '画像取得エラー' },
+        { error: '画像取得エラー', details: errorText },
         { status: response.status }
       );
     }
@@ -39,7 +44,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     });
 
   } catch (error) {
-    console.error('API Error:', error);
+    console.error('Image API Error:', error);
     return NextResponse.json(
       { error: 'サーバーエラーが発生しました' },
       { status: 500 }

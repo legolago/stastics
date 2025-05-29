@@ -1,36 +1,37 @@
+// app/api/sessions/[id]/route.ts
+
 import { NextRequest, NextResponse } from 'next/server';
 
-const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://python-api:8000';
-
-// セッション詳細を取得
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id: sessionId } = await params;
-    
+    const sessionId = params.id;
     console.log(`Fetching session details: ${sessionId}`);
     
     // Python APIからセッション詳細を取得
-    const response = await fetch(`${PYTHON_API_URL}/sessions/${sessionId}`, {
-      method: 'GET',
-    });
-
+    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}`;
+    const response = await fetch(pythonApiUrl);
+    
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Python API Error:', errorText);
+      console.error(`Python API Error: ${errorText}`);
       return NextResponse.json(
-        { error: 'セッション取得中にエラーが発生しました', details: errorText },
+        { error: 'Python APIからデータを取得できませんでした' },
         { status: response.status }
       );
     }
 
-    const result = await response.json();
-    return NextResponse.json(result);
+    const data = await response.json();
+    
+    return NextResponse.json({
+      success: true,
+      data: data
+    });
 
   } catch (error) {
-    console.error('Get Session API Error:', error);
+    console.error('Session detail API Error:', error);
     return NextResponse.json(
       { error: 'サーバーエラーが発生しました' },
       { status: 500 }
@@ -38,35 +39,81 @@ export async function GET(
   }
 }
 
-// セッションを削除
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
+  { params }: { params: { id: string } }
 ) {
   try {
-    const { id: sessionId } = await params;
-    
+    const sessionId = params.id;
     console.log(`Deleting session: ${sessionId}`);
     
-    // Python APIに削除リクエストを送信
-    const response = await fetch(`${PYTHON_API_URL}/sessions/${sessionId}`, {
+    // Python APIでセッションを削除
+    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}`;
+    const response = await fetch(pythonApiUrl, {
       method: 'DELETE',
     });
-
+    
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Python API Error:', errorText);
+      console.error(`Python API Error: ${errorText}`);
       return NextResponse.json(
-        { error: '削除中にエラーが発生しました', details: errorText },
+        { error: 'セッションの削除に失敗しました' },
         { status: response.status }
       );
     }
 
-    const result = await response.json();
-    return NextResponse.json(result);
+    const data = await response.json();
+    
+    return NextResponse.json({
+      success: true,
+      message: 'セッションが削除されました'
+    });
 
   } catch (error) {
-    console.error('Delete API Error:', error);
+    console.error('Session delete API Error:', error);
+    return NextResponse.json(
+      { error: 'サーバーエラーが発生しました' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const sessionId = params.id;
+    const body = await request.json();
+    console.log(`Updating session: ${sessionId}`, body);
+    
+    // クエリパラメータを構築
+    const searchParams = new URLSearchParams();
+    if (body.session_name) searchParams.append('session_name', body.session_name);
+    if (body.description) searchParams.append('description', body.description);
+    if (body.tags) searchParams.append('tags', body.tags);
+    
+    // Python APIでセッションを更新
+    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}?${searchParams.toString()}`;
+    const response = await fetch(pythonApiUrl, {
+      method: 'PUT',
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Python API Error: ${errorText}`);
+      return NextResponse.json(
+        { error: 'セッションの更新に失敗しました' },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    
+    return NextResponse.json(data);
+
+  } catch (error) {
+    console.error('Session update API Error:', error);
     return NextResponse.json(
       { error: 'サーバーエラーが発生しました' },
       { status: 500 }

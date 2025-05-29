@@ -4,9 +4,7 @@ import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import AnalysisLayout from '../../components/AnalysisLayout';
 import FileUpload from '../../components/FileUpload';
-import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams,AnalysisResult,SessionDetailResponse } from '../../types/analysis';
-
-
+import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams, SessionDetailResponse, CoordinatePoint } from '../../types/analysis';
 
 export default function CorrespondencePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -30,7 +28,7 @@ export default function CorrespondencePage() {
   // セッション履歴を取得
   const fetchSessions = async () => {
     try {
-      setLoading(true);
+      setSessionsLoading(true);
       const params = new URLSearchParams({
         userId: 'default',
         limit: '50',
@@ -62,89 +60,93 @@ export default function CorrespondencePage() {
       console.error('Session fetch error:', error);
       setError(error instanceof Error ? error.message : 'データ取得中にエラーが発生しました');
     } finally {
-      setLoading(false);
+      setSessionsLoading(false);
     }
   };
 
-    // 特定のセッションの詳細を取得
-    const fetchSessionDetail = async (sessionId: number) => {
-      try {
-        const response = await fetch(`/api/sessions/${sessionId}`);
-        
-        if (!response.ok) {
-          console.error(`HTTP ${response.status}: ${response.statusText}`);
-          return;
-        }
-
-        const data: SessionDetailResponse = await response.json();
-        console.log('Received session data:', data);
-
-        if (data.success && data.data) {
-          const sessionData = data.data;
-          
-          // 既存の型定義に合わせて変換
-          const analysisResult: AnalysisResult = {
-            success: true,
-            session_id: sessionData.session_id,
-            session_name: sessionData.session_name,
-            analysis_type: 'correspondence',
-            plot_base64: "", // プロットデータは別途取得が必要
-            data: {
-              total_inertia: sessionData.total_inertia,
-              chi2: 0,
-              degrees_of_freedom: 0,
-              n_components: 2,
-              eigenvalues: [],
-              explained_inertia: [
-                sessionData.dimension_1_contribution,
-                sessionData.dimension_2_contribution
-              ],
-              cumulative_inertia: [
-                sessionData.dimension_1_contribution,
-                sessionData.dimension_1_contribution + sessionData.dimension_2_contribution
-              ],
-              plot_image: "", // plot_base64と重複だが既存構造に合わせる
-              coordinates: {
-                rows: [],
-                columns: []
-              }
-            },
-            metadata: {
-              session_name: sessionData.session_name,
-              filename: sessionData.filename,
-              rows: sessionData.row_count,
-              columns: sessionData.column_count,
-              row_names: [],
-              column_names: []
-            },
-            session_info: {
-              session_id: sessionData.session_id,
-              session_name: sessionData.session_name,
-              description: sessionData.description,
-              tags: sessionData.tags,
-              analysis_timestamp: sessionData.analysis_timestamp,
-              filename: sessionData.filename,
-              analysis_type: sessionData.analysis_type,
-              row_count: sessionData.row_count,
-              column_count: sessionData.column_count
-            }
-          };
-
-          setResult(analysisResult);
-        }
-      } catch (err) {
-        console.error('セッション詳細取得エラー:', err);
+  // 特定のセッションの詳細を取得
+  const fetchSessionDetail = async (sessionId: number) => {
+    try {
+      console.log('Fetching session details for:', sessionId);
+      
+      const response = await fetch(`/api/sessions/${sessionId}`);
+      
+      if (!response.ok) {
+        console.error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text();
+        console.error('Error response:', errorText);
+        alert('セッション詳細の取得に失敗しました');
+        return;
       }
-    };
+
+      const data: SessionDetailResponse = await response.json();
+      console.log('Received session data:', data);
+
+      if (data.success && data.data) {
+        const pythonResponse = data.data;
+        
+        // 型安全な変換処理
+        const analysisResult: CorrespondenceAnalysisResult = {
+          success: true,
+          session_id: pythonResponse.session_info?.session_id || sessionId,
+          session_name: pythonResponse.session_info?.session_name || '',
+          analysis_type: 'correspondence',
+          plot_base64: pythonResponse.visualization?.plot_image || "", 
+          data: {
+            total_inertia: pythonResponse.analysis_data?.total_inertia || 0,
+            chi2: pythonResponse.analysis_data?.chi2 || 0,
+            degrees_of_freedom: pythonResponse.analysis_data?.degrees_of_freedom || 0,
+            n_components: 2,
+            eigenvalues: pythonResponse.analysis_data?.eigenvalues?.map(e => e.eigenvalue) || [],
+            explained_inertia: pythonResponse.analysis_data?.eigenvalues?.map(e => e.explained_inertia) || [],
+            cumulative_inertia: pythonResponse.analysis_data?.eigenvalues?.map(e => e.cumulative_inertia) || [],
+            plot_image: pythonResponse.visualization?.plot_image || "",
+            coordinates: {
+              rows: pythonResponse.analysis_data?.coordinates?.rows || [],
+              columns: pythonResponse.analysis_data?.coordinates?.columns || []
+            }
+          },
+          metadata: {
+            session_name: pythonResponse.session_info?.session_name || '',
+            filename: pythonResponse.session_info?.filename || '',
+            rows: pythonResponse.metadata?.row_count || 0,
+            columns: pythonResponse.metadata?.column_count || 0,
+            row_names: pythonResponse.analysis_data?.coordinates?.rows?.map(r => r.name) || [],
+            column_names: pythonResponse.analysis_data?.coordinates?.columns?.map(c => c.name) || []
+          },
+          session_info: {
+            session_id: pythonResponse.session_info?.session_id || sessionId,
+            session_name: pythonResponse.session_info?.session_name || '',
+            description: pythonResponse.session_info?.description || '',
+            tags: pythonResponse.session_info?.tags || [],
+            analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
+            filename: pythonResponse.session_info?.filename || '',
+            analysis_type: 'correspondence',
+            row_count: pythonResponse.metadata?.row_count || 0,
+            column_count: pythonResponse.metadata?.column_count || 0
+          }
+        };
+
+        setResult(analysisResult);
+        console.log('Session details loaded successfully');
+        
+      } else {
+        console.error('Invalid response format:', data);
+        alert('セッションデータの形式が不正です');
+      }
+    } catch (err) {
+      console.error('セッション詳細取得エラー:', err);
+      alert('セッション詳細の取得中にエラーが発生しました');
+    }
+  };
 
   // セッションを削除
-  // page.tsx内のdeleteSession関数を修正
   const deleteSession = async (sessionId: number) => {
     if (!confirm('このセッションを削除しますか？')) return;
 
     try {
-      // 正しいエンドポイントに修正（例）
-      const response = await fetch(`/api/correspondence/sessions/${sessionId}`, {
+      // 正しいエンドポイントに修正
+      const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE'
       });
       
@@ -168,8 +170,12 @@ export default function CorrespondencePage() {
   // CSVファイルをダウンロード
   const downloadCSV = async (sessionId: number) => {
     try {
+      console.log('Downloading original CSV for session:', sessionId);
+      
       const response = await fetch(`/api/sessions/${sessionId}/csv`);
-      if (!response.ok) throw new Error('ダウンロードに失敗しました');
+      if (!response.ok) {
+        throw new Error('ダウンロードに失敗しました');
+      }
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -179,13 +185,16 @@ export default function CorrespondencePage() {
       // Content-Dispositionヘッダーからファイル名を取得
       const contentDisposition = response.headers.get('Content-Disposition');
       const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-      const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `analysis_${sessionId}.csv`;
+      const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `session_${sessionId}_data.csv`;
       
       a.download = fileName;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+      
+      console.log('Original CSV download completed');
+      
     } catch (err) {
       console.error('CSVダウンロードエラー:', err);
       alert('CSVファイルのダウンロードに失敗しました');
@@ -195,18 +204,30 @@ export default function CorrespondencePage() {
   // プロット画像をダウンロード
   const downloadPlotImage = async (sessionId: number) => {
     try {
+      console.log('Downloading plot image for session:', sessionId);
+      
       const response = await fetch(`/api/sessions/${sessionId}/image`);
-      if (!response.ok) throw new Error('ダウンロードに失敗しました');
+      if (!response.ok) {
+        throw new Error('ダウンロードに失敗しました');
+      }
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `correspondence_analysis_${sessionId}_plot.png`;
+      
+      const contentDisposition = response.headers.get('Content-Disposition');
+      const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `correspondence_analysis_${sessionId}_plot.png`;
+      
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+      
+      console.log('Plot image download completed');
+      
     } catch (err) {
       console.error('画像ダウンロードエラー:', err);
       alert('プロット画像のダウンロードに失敗しました');
@@ -216,61 +237,76 @@ export default function CorrespondencePage() {
   // 分析結果CSVを生成してダウンロード
   const downloadAnalysisResultCSV = async (result: CorrespondenceAnalysisResult) => {
     try {
-      // セッションの詳細データを取得して座標情報を含める
-      const response = await fetch(`/api/sessions/${result.session_id}`);
-      const detailData = await response.json();
+      console.log('Downloading analysis CSV for session:', result.session_id);
       
-      if (!detailData.success) {
-        throw new Error('詳細データの取得に失敗しました');
-      }
-
-      // 分析結果をCSV形式で生成
-      let csvContent = "コレスポンデンス分析結果\n";
-      csvContent += `セッション名,${result.metadata.session_name}\n`;
-      csvContent += `ファイル名,${result.metadata.filename}\n`;
-      csvContent += `データサイズ,${result.metadata.rows}行 × ${result.metadata.columns}列\n`;
-      csvContent += `総慣性,${result.data.total_inertia}\n`;
-      csvContent += `カイ二乗値,${result.data.chi2}\n`;
-      csvContent += `自由度,${result.data.degrees_of_freedom}\n`;
-      csvContent += "\n次元別情報\n";
-      csvContent += "次元,固有値,寄与率(%),累積寄与率(%)\n";
+      // 新しい分析結果詳細CSVエンドポイントを使用
+      const response = await fetch(`/api/sessions/${result.session_id}/analysis-csv`);
       
-      result.data.eigenvalues.forEach((eigenvalue, index) => {
-        csvContent += `第${index + 1}次元,${eigenvalue},${(result.data.explained_inertia[index] * 100).toFixed(2)},${(result.data.cumulative_inertia[index] * 100).toFixed(2)}\n`;
-      });
-
-      // 行座標（イメージ）を追加
-      csvContent += "\n行座標（イメージ）\n";
-      csvContent += "項目名,第1次元,第2次元\n";
-      if (detailData.analysis_data.coordinates.rows) {
-        detailData.analysis_data.coordinates.rows.forEach((row: any) => {
-          csvContent += `${row.name},${row.dimension_1},${row.dimension_2}\n`;
-        });
+      if (!response.ok) {
+        throw new Error('分析結果CSVの取得に失敗しました');
       }
 
-      // 列座標（ブランド）を追加
-      csvContent += "\n列座標（ブランド）\n";
-      csvContent += "項目名,第1次元,第2次元\n";
-      if (detailData.analysis_data.coordinates.columns) {
-        detailData.analysis_data.coordinates.columns.forEach((col: any) => {
-          csvContent += `${col.name},${col.dimension_1},${col.dimension_2}\n`;
-        });
-      }
-
-      // BOMを追加（Excelでの文字化け対策）
-      const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
-      const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+      // ファイルとしてダウンロード
+      const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `correspondence_analysis_result_${result.session_id}.csv`;
+      
+      const contentDisposition = response.headers.get('Content-Disposition');
+      const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `analysis_results_${result.session_id}.csv`;
+      
+      a.download = fileName;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
+      
+      console.log('Analysis CSV download completed');
+      
     } catch (err) {
       console.error('分析結果CSVダウンロードエラー:', err);
-      alert('分析結果CSVのダウンロードに失敗しました');
+      
+      // フォールバック：クライアント側で生成
+      try {
+        console.log('Attempting fallback CSV generation...');
+        
+        let csvContent = "コレスポンデンス分析結果\n";
+        csvContent += `セッション名,${result.metadata?.session_name || result.session_name || '不明'}\n`;
+        csvContent += `ファイル名,${result.metadata?.filename || '不明'}\n`;
+        csvContent += `データサイズ,${result.metadata?.rows || 0}行 × ${result.metadata?.columns || 0}列\n`;
+        csvContent += `総慣性,${result.data?.total_inertia || 0}\n`;
+        csvContent += `カイ二乗値,${result.data?.chi2 || 0}\n`;
+        csvContent += `自由度,${result.data?.degrees_of_freedom || 0}\n`;
+        csvContent += "\n次元別情報\n";
+        csvContent += "次元,固有値,寄与率(%),累積寄与率(%)\n";
+        
+        if (result.data?.eigenvalues && result.data?.explained_inertia) {
+          result.data.eigenvalues.forEach((eigenvalue, index) => {
+            const explained = result.data.explained_inertia[index] || 0;
+            const cumulative = result.data.cumulative_inertia?.[index] || 0;
+            csvContent += `第${index + 1}次元,${eigenvalue},${(explained * 100).toFixed(2)},${(cumulative * 100).toFixed(2)}\n`;
+          });
+        }
+
+        // BOMを追加（Excelでの文字化け対策）
+        const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
+        const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `correspondence_analysis_result_${result.session_id}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        console.log('Fallback CSV generation completed');
+        
+      } catch (fallbackError) {
+        console.error('フォールバック処理でもエラー:', fallbackError);
+        alert('分析結果CSVのダウンロードに失敗しました');
+      }
     }
   };
 
@@ -809,8 +845,15 @@ export default function CorrespondencePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.metadata.row_names?.map((name, index) => (
+                    {result.data.coordinates.rows.map((row: CoordinatePoint, index: number) => (
                       <tr key={index} className="hover:bg-gray-100">
+                        <td className="p-2 font-medium">{row.name}</td>
+                        <td className="p-2 text-right">{row.dimension_1?.toFixed(3) || '-'}</td>
+                        <td className="p-2 text-right">{row.dimension_2?.toFixed(3) || '-'}</td>
+                      </tr>
+                    ))}
+                    {result.metadata.row_names?.map((name, index) => (
+                      <tr key={`fallback-${index}`} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{name}</td>
                         <td className="p-2 text-right">-</td>
                         <td className="p-2 text-right">-</td>
@@ -837,8 +880,15 @@ export default function CorrespondencePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.metadata.column_names?.map((name, index) => (
+                    {result.data.coordinates.columns.map((col: CoordinatePoint, index: number) => (
                       <tr key={index} className="hover:bg-gray-100">
+                        <td className="p-2 font-medium">{col.name}</td>
+                        <td className="p-2 text-right">{col.dimension_1?.toFixed(3) || '-'}</td>
+                        <td className="p-2 text-right">{col.dimension_2?.toFixed(3) || '-'}</td>
+                      </tr>
+                    ))}
+                    {result.metadata.column_names?.map((name, index) => (
+                      <tr key={`fallback-${index}`} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{name}</td>
                         <td className="p-2 text-right">-</td>
                         <td className="p-2 text-right">-</td>
