@@ -1,3 +1,4 @@
+//src/aap/correspondence/page.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -5,6 +6,33 @@ import Image from 'next/image';
 import AnalysisLayout from '../../components/AnalysisLayout';
 import FileUpload from '../../components/FileUpload';
 import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams, SessionDetailResponse, CoordinatePoint } from '../../types/analysis';
+
+// API エラーレスポンスの型定義
+interface ApiErrorResponse {
+  success: false;
+  error: string;
+  detail?: string;
+  hints?: string[];
+  debug?: {
+    filePreview?: string[];
+    requestInfo?: {
+      url: string;
+      params: Record<string, string>;
+    };
+  };
+}
+
+// API 成功レスポンスの型定義
+interface ApiSuccessResponse {
+  success: true;
+  session_id: number;
+  data: any;
+  metadata: any;
+  [key: string]: any;
+}
+
+// レスポンス型の統合
+type ApiResponse = ApiSuccessResponse | ApiErrorResponse;
 
 export default function CorrespondencePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -337,6 +365,42 @@ export default function CorrespondencePage() {
     setResult(null);
 
     try {
+      // CSVファイルの基本検証
+      const fileContent = await file.text();
+      const lines = fileContent.split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+      
+      if (lines.length < 3) {
+        throw new Error('データが不足しています。ヘッダー行と最低2行のデータが必要です。');
+      }
+
+      // ヘッダーとデータの検証
+      const headers = lines[0].split(',').map(h => h.trim());
+      if (headers.length < 3) {
+        throw new Error('列が不足しています。ラベル列と最低2列のデータが必要です。');
+      }
+
+      // データ行の検証
+      for (let i = 1; i < Math.min(lines.length, 4); i++) {
+        const cells = lines[i].split(',');
+        if (cells.length !== headers.length) {
+          throw new Error(`${i + 1}行目の列数が一致しません。期待値: ${headers.length}, 実際: ${cells.length}`);
+        }
+      }
+
+      console.log('ファイル検証完了:', {
+        fileName: file.name,
+        rows: lines.length - 1,
+        columns: headers.length - 1,
+        headers: headers.slice(0, 3) // 最初の3つのヘッダーを表示
+      });
+
+      // FormDataの準備
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // クエリパラメータの設定（既存のroute.tsに合わせる）
       const params = new URLSearchParams({
         session_name: sessionName.trim(),
         description: description.trim(),
@@ -345,30 +409,75 @@ export default function CorrespondencePage() {
         n_components: parameters.n_components.toString()
       });
 
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch(`/api/analyze?${params.toString()}`, {
+      // 正しいエンドポイントに修正（既存のroute.tsのパスに合わせる）
+      console.log('分析を開始します...', params.toString());
+      const response = await fetch(`/api/correspondence/analyze?${params.toString()}`, {
         method: 'POST',
         body: formData,
       });
 
-      const data = await response.json();
+      const responseText = await response.text();
+      console.log('API Response:', response.status, responseText);
 
-      if (!response.ok) {
-        throw new Error(data.error || 'エラーが発生しました');
+      let data: ApiResponse;
+      try {
+        data = JSON.parse(responseText) as ApiResponse;
+      } catch (parseError) {
+        console.error('Response parsing error:', parseError);
+        throw new Error('サーバーからの応答を解析できませんでした');
       }
 
+      if (!response.ok) {
+        console.error('API Error:', data);
+        
+        // 型ガードを使用してエラーレスポンスかチェック
+        if ('error' in data) {
+          const errorData = data as ApiErrorResponse;
+          let errorMessage = errorData.error || errorData.detail || 'データの分析中にエラーが発生しました';
+          
+          // カスタムエラーメッセージの処理
+          if (errorData.detail && errorData.detail.includes('(0, 0)')) {
+            errorMessage = 'データの形式が正しくありません。以下を確認してください：\n' +
+              '• 1行目にヘッダー（列名）があること\n' +
+              '• 1列目に行ラベルがあること\n' +
+              '• データ部分（2行目以降、2列目以降）に数値データがあること\n' +
+              '• すべての数値が非負であること\n' +
+              '• 各行・各列に少なくとも1つの非ゼロ値があること';
+          }
+          
+          // hintsがある場合は追加（型安全に処理）
+          if (errorData.hints && Array.isArray(errorData.hints)) {
+            errorMessage += '\n\n推奨事項:\n' + errorData.hints.map((hint: string) => `• ${hint}`).join('\n');
+          }
+          
+          // デバッグ情報の表示
+          if (errorData.debug?.filePreview && Array.isArray(errorData.debug.filePreview)) {
+            console.log('ファイルプレビュー:', errorData.debug.filePreview);
+            errorMessage += '\n\nファイルの最初の数行:\n' + errorData.debug.filePreview.join('\n');
+          }
+          
+          throw new Error(errorMessage);
+        }
+      }
+
+      // 成功レスポンスの処理
+      if (!data.success) {
+        throw new Error('error' in data ? data.error : 'データの分析に失敗しました');
+      }
+
+      console.log('分析が完了しました:', data);
+
+      // 結果の設定と履歴の更新
       setResult(data as CorrespondenceAnalysisResult);
       fetchSessions();
       
     } catch (err) {
+      console.error('Analysis error:', err);
       setError(err instanceof Error ? err.message : '不明なエラーが発生しました');
     } finally {
       setLoading(false);
     }
   };
-
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString('ja-JP');
   };

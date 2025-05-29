@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import matplotlib
+from routers.correspondence import router as correspondence_router
 
 matplotlib.use("Agg")
 
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(sessions.router)  # prefixなしでも登録（既存コード互換性のため）
+app.include_router(correspondence_router)  # /correspondence/analyze など
 
 
 @app.get("/")

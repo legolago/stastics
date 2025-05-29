@@ -131,7 +131,7 @@ class VisualizationData(Base):
     session_id = Column(Integer, ForeignKey("analysis_sessions.id"), nullable=False)
     # 🆕 拡張されたimage_type
     image_type = Column(String(50), default="correspondence_plot")
-    image_data = Column(LargeBinary, nullable=False)
+    image_data = Column(LargeBinary, nullable=True)
     image_base64 = Column(Text)
     image_size = Column(Integer)
     width = Column(Integer)

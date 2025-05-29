@@ -149,7 +149,15 @@ export interface AnalysisResult extends CorrespondenceAnalysisResult {}
 export interface ApiErrorResponse {
   success: false;
   error: string;
-  details?: any;
+  detail?: string;
+  hints?: string[];
+  debug?: {
+    filePreview?: string[];
+    requestInfo?: {
+      url: string;
+      params: Record<string, string>;
+    };
+  };
 }
 
 // APIレスポンスの基本型

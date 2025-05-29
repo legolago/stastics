@@ -71,12 +71,14 @@ async def get_analysis_sessions(
                 ),
                 "dimension_1_contribution": (
                     float(session.dimension_1_contribution)
-                    if session.dimension_1_contribution
+                    if hasattr(session, "dimension_1_contribution")
+                    and session.dimension_1_contribution
                     else None
                 ),
                 "dimension_2_contribution": (
                     float(session.dimension_2_contribution)
-                    if session.dimension_2_contribution
+                    if hasattr(session, "dimension_2_contribution")
+                    and session.dimension_2_contribution
                     else None
                 ),
                 "row_count": session.row_count,
@@ -223,35 +225,133 @@ async def get_analysis_session(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
+        # 関連データを取得
+        coordinates = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
+        )
+        eigenvalues = (
+            db.query(EigenvalueData)
+            .filter(EigenvalueData.session_id == session_id)
+            .all()
+        )
+        visualization = (
+            db.query(VisualizationData)
+            .filter(VisualizationData.session_id == session_id)
+            .first()
+        )
+
+        # 座標データを整理
+        row_coords = []
+        col_coords = []
+        for coord in coordinates:
+            coord_data = {
+                "name": getattr(coord, "point_name", "Unknown"),
+                "dimension_1": float(getattr(coord, "dimension_1", 0)),
+                "dimension_2": float(getattr(coord, "dimension_2", 0)),
+            }
+
+            # point_typeを安全に判定
+            point_type = getattr(coord, "point_type", None)
+            if point_type == "row":
+                row_coords.append(coord_data)
+            elif point_type == "column":
+                col_coords.append(coord_data)
+            else:
+                # フォールバック: インデックスで判定
+                coord_index = coordinates.index(coord)
+                if coord_index < len(coordinates) // 2:
+                    row_coords.append(coord_data)
+                else:
+                    col_coords.append(coord_data)
+
+        # 固有値データを整理
+        eigenvalue_data = []
+        for eigenval in sorted(eigenvalues, key=lambda x: x.dimension_number):
+            eigenvalue_data.append(
+                {
+                    "dimension": eigenval.dimension_number,
+                    "eigenvalue": (
+                        float(eigenval.eigenvalue) if eigenval.eigenvalue else 0
+                    ),
+                    "explained_inertia": (
+                        float(eigenval.explained_inertia)
+                        if eigenval.explained_inertia
+                        else 0
+                    ),
+                    "cumulative_inertia": (
+                        float(eigenval.cumulative_inertia)
+                        if eigenval.cumulative_inertia
+                        else 0
+                    ),
+                }
+            )
+
         # analysis_typeを安全に取得
         analysis_type = getattr(session, "analysis_type", "correspondence")
 
-        session_data = {
-            "session_id": session.id,
-            "session_name": session.session_name,
-            "filename": session.original_filename,
-            "description": session.description,
-            "tags": session.tags or [],
-            "analysis_timestamp": session.analysis_timestamp.isoformat(),
-            "analysis_type": analysis_type,
-            "total_inertia": (
-                float(session.total_inertia) if session.total_inertia else None
-            ),
-            "dimension_1_contribution": (
-                float(session.dimension_1_contribution)
-                if session.dimension_1_contribution
-                else None
-            ),
-            "dimension_2_contribution": (
-                float(session.dimension_2_contribution)
-                if session.dimension_2_contribution
-                else None
-            ),
-            "row_count": session.row_count,
-            "column_count": session.column_count,
+        result = {
+            "success": True,
+            "session_info": {
+                "session_id": session.id,
+                "session_name": session.session_name,
+                "filename": session.original_filename,
+                "description": session.description,
+                "tags": session.tags or [],
+                "analysis_timestamp": session.analysis_timestamp.isoformat(),
+                "user_id": session.user_id,
+            },
+            "analysis_data": {
+                "total_inertia": (
+                    float(session.total_inertia) if session.total_inertia else None
+                ),
+                "chi2": (
+                    float(getattr(session, "chi2_value", 0))
+                    if hasattr(session, "chi2_value") and getattr(session, "chi2_value")
+                    else None
+                ),
+                "degrees_of_freedom": getattr(session, "degrees_of_freedom", None),
+                "dimensions_count": len(eigenvalue_data),
+                "eigenvalues": eigenvalue_data,
+                "coordinates": {"rows": row_coords, "columns": col_coords},
+            },
+            "metadata": {
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+                "file_size": getattr(session, "file_size", None),
+            },
+            "visualization": {
+                "plot_image": (
+                    getattr(visualization, "image_base64", None)
+                    if visualization
+                    else None
+                ),
+                "image_info": (
+                    {
+                        "width": (
+                            getattr(visualization, "width", None)
+                            if visualization
+                            else None
+                        ),
+                        "height": (
+                            getattr(visualization, "height", None)
+                            if visualization
+                            else None
+                        ),
+                        "size_bytes": (
+                            getattr(visualization, "image_size", None)
+                            if visualization
+                            else None
+                        ),
+                    }
+                    if visualization
+                    else None
+                ),
+            },
         }
 
-        return {"success": True, "data": session_data}
+        return result
 
     except HTTPException:
         raise
@@ -284,7 +384,7 @@ async def download_original_csv(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
-        # 元データを取得（main.pyの方式に合わせる）
+        # 元データを取得
         original_data = (
             db.query(OriginalData).filter(OriginalData.session_id == session_id).first()
         )
@@ -292,62 +392,42 @@ async def download_original_csv(
             raise HTTPException(status_code=404, detail="元のCSVデータが見つかりません")
 
         print(f"Original data found, checking attributes...")
-        print(
-            f"Available attributes: {[attr for attr in dir(original_data) if not attr.startswith('_')]}"
-        )
+        available_attrs = [
+            attr for attr in dir(original_data) if not attr.startswith("_")
+        ]
+        print(f"Available attributes: {available_attrs}")
 
-        # main.pyと同じ方式でcsv_dataフィールドを確認
+        # CSVデータを安全に取得
         csv_content = None
 
-        # 直接csv_dataフィールドがある場合（main.pyの方式）
+        # 1. csv_dataフィールドを優先
         if hasattr(original_data, "csv_data") and original_data.csv_data:
             print("Found csv_data field")
             csv_content = original_data.csv_data
-        else:
-            print("csv_data field not found, trying alternative approaches...")
+        # 2. data_matrixから復元
+        elif hasattr(original_data, "data_matrix") and original_data.data_matrix:
+            try:
+                print("Attempting to reconstruct from data_matrix...")
+                df = pd.DataFrame(original_data.data_matrix)
 
-            # 代替手段：data_matrixから復元
-            if hasattr(original_data, "data_matrix") and original_data.data_matrix:
-                try:
-                    print("Attempting to reconstruct from data_matrix...")
-                    df = pd.DataFrame(original_data.data_matrix)
+                # 行名・列名を設定
+                if hasattr(original_data, "row_names") and original_data.row_names:
+                    df.index = original_data.row_names
+                if (
+                    hasattr(original_data, "column_names")
+                    and original_data.column_names
+                ):
+                    df.columns = original_data.column_names
 
-                    # 行名・列名を設定
-                    if hasattr(original_data, "row_names") and original_data.row_names:
-                        df.index = original_data.row_names
-                    if (
-                        hasattr(original_data, "column_names")
-                        and original_data.column_names
-                    ):
-                        df.columns = original_data.column_names
+                # CSVとして出力
+                output = io.StringIO()
+                df.to_csv(output, encoding="utf-8")
+                csv_content = output.getvalue()
+                output.close()
+                print("Successfully reconstructed CSV from data_matrix")
 
-                    # CSVとして出力
-                    output = io.StringIO()
-                    df.to_csv(output, encoding="utf-8")
-                    csv_content = output.getvalue()
-                    output.close()
-                    print("Successfully reconstructed CSV from data_matrix")
-
-                except Exception as matrix_error:
-                    print(f"Failed to reconstruct from data_matrix: {matrix_error}")
-
-            # 最終手段：個別レコードから復元を試行
-            if not csv_content:
-                print("Attempting to reconstruct from individual records...")
-                try:
-                    # 複数レコードとして保存されている場合
-                    all_records = (
-                        db.query(OriginalData)
-                        .filter(OriginalData.session_id == session_id)
-                        .all()
-                    )
-                    if len(all_records) > 1:
-                        # 個別レコードから復元するロジック
-                        # この部分は実際のデータ構造に応じて調整が必要
-                        csv_content = "# データ復元に失敗しました\n# 管理者にお問い合わせください\n"
-
-                except Exception as records_error:
-                    print(f"Failed to reconstruct from records: {records_error}")
+            except Exception as matrix_error:
+                print(f"Failed to reconstruct from data_matrix: {matrix_error}")
 
         # CSVコンテンツが取得できない場合
         if not csv_content:
@@ -356,7 +436,9 @@ async def download_original_csv(
             )
 
         # ファイル名を設定
-        filename = session.original_filename or f"session_{session_id}_data.csv"
+        filename = getattr(
+            session, "original_filename", f"session_{session_id}_data.csv"
+        )
         if not filename.endswith(".csv"):
             filename += ".csv"
 
@@ -401,7 +483,7 @@ async def download_plot_image(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
-        # 可視化データを取得（main.pyの方式に合わせる）
+        # 可視化データを取得
         visualization_data = (
             db.query(VisualizationData)
             .filter(VisualizationData.session_id == session_id)
@@ -412,35 +494,34 @@ async def download_plot_image(
             raise HTTPException(status_code=404, detail="プロット画像が見つかりません")
 
         print(f"Visualization data found, checking attributes...")
-        print(
-            f"Available attributes: {[attr for attr in dir(visualization_data) if not attr.startswith('_')]}"
-        )
+        available_attrs = [
+            attr for attr in dir(visualization_data) if not attr.startswith("_")
+        ]
+        print(f"Available attributes: {available_attrs}")
 
-        # 画像データを取得（main.pyと同じ方式）
+        # 画像データを安全に取得
         image_data = None
 
-        # main.pyの方式：image_dataフィールドを優先
+        # 1. image_dataフィールドを優先
         if hasattr(visualization_data, "image_data") and visualization_data.image_data:
             print("Found image_data field (binary)")
             image_data = visualization_data.image_data
+        # 2. image_base64フィールド
         elif (
             hasattr(visualization_data, "image_base64")
             and visualization_data.image_base64
         ):
             print("Found image_base64 field")
             try:
-                # Base64エンコードされたデータをデコード
                 base64_data = visualization_data.image_base64
                 if base64_data.startswith("data:image/"):
-                    # data:image/png;base64, プレフィックスを除去
                     base64_data = base64_data.split(",")[1]
-
                 image_data = base64.b64decode(base64_data)
                 print("Successfully decoded base64 image data")
             except Exception as decode_error:
                 print(f"Base64 decode error: {decode_error}")
+        # 3. その他の属性名パターン
         else:
-            # その他の属性名パターンを試す
             for attr_name in [
                 "plot_image",
                 "plot_data",
@@ -452,7 +533,6 @@ async def download_plot_image(
                     if attr_value:
                         print(f"Found image data in attribute: {attr_name}")
                         if isinstance(attr_value, str):
-                            # Base64文字列の場合
                             try:
                                 if attr_value.startswith("data:image/"):
                                     attr_value = attr_value.split(",")[1]
@@ -461,7 +541,6 @@ async def download_plot_image(
                             except:
                                 continue
                         else:
-                            # バイナリデータの場合
                             image_data = attr_value
                             break
 
@@ -498,6 +577,8 @@ async def download_analysis_results_csv(
 ):
     """分析結果の詳細データをCSV形式でダウンロード"""
     try:
+        print(f"Generating analysis CSV for session: {session_id}")
+
         # セッションの存在確認
         session = (
             db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
@@ -507,79 +588,133 @@ async def download_analysis_results_csv(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
-        # 分析タイプを取得（コレスポンデンス分析がデフォルト）
-        analysis_type = getattr(session, "analysis_type", "correspondence")
-
-        output = io.StringIO()
-
-        # ヘッダー情報
-        output.write("分析結果詳細データ\n\n")
-        output.write(f"セッション名,{session.session_name}\n")
-        output.write(f"分析日時,{session.analysis_timestamp}\n")
-        output.write(f"分析タイプ,{analysis_type}\n")
-        output.write(f"元ファイル名,{session.original_filename}\n\n")
-
-        # 固有値データ
-        eigenvalue_data = (
-            db.query(EigenvalueData)
-            .filter(EigenvalueData.session_id == session_id)
-            .order_by(EigenvalueData.dimension_number)
-            .all()
-        )
-
-        if eigenvalue_data:
-            output.write("固有値・寄与率\n")
-            output.write("次元,固有値,寄与率(%),累積寄与率(%)\n")
-
-            total_eigenvalue = sum([ev.eigenvalue for ev in eigenvalue_data])
-            cumulative_ratio = 0
-
-            for ev in eigenvalue_data:
-                ratio = (
-                    (ev.eigenvalue / total_eigenvalue * 100)
-                    if total_eigenvalue > 0
-                    else 0
-                )
-                cumulative_ratio += ratio
-                output.write(
-                    f"第{ev.dimension_number}次元,{ev.eigenvalue:.6f},{ratio:.2f},{cumulative_ratio:.2f}\n"
-                )
-            output.write("\n")
-
-        # 座標データ
+        # 関連データを取得
         coordinates_data = (
             db.query(CoordinatesData)
             .filter(CoordinatesData.session_id == session_id)
             .all()
         )
+        eigenvalue_data = (
+            db.query(EigenvalueData)
+            .filter(EigenvalueData.session_id == session_id)
+            .all()
+        )
 
+        print(f"Found {len(coordinates_data)} coordinate records")
+        print(f"Found {len(eigenvalue_data)} eigenvalue records")
+
+        # 座標データの属性を確認
         if coordinates_data:
-            # 行座標と列座標を分離
-            row_coords = [c for c in coordinates_data if c.coordinate_type == "row"]
-            col_coords = [c for c in coordinates_data if c.coordinate_type == "column"]
+            first_coord = coordinates_data[0]
+            available_attrs = [
+                attr for attr in dir(first_coord) if not attr.startswith("_")
+            ]
+            print(f"Available coordinate attributes: {available_attrs}")
 
-            if row_coords:
-                output.write("行座標\n")
-                output.write("項目名,第1次元,第2次元,寄与度,品質\n")
-                for coord in row_coords:
+        output = io.StringIO()
+
+        # ヘッダー情報
+        output.write("分析結果サマリー\n")
+        output.write(f"セッション名,{session.session_name}\n")
+        output.write(f"ファイル名,{getattr(session, 'original_filename', 'unknown')}\n")
+        output.write(
+            f"分析日時,{session.analysis_timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        )
+        output.write(f"データサイズ,{session.row_count}行 × {session.column_count}列\n")
+
+        if hasattr(session, "total_inertia") and session.total_inertia:
+            output.write(f"総慣性,{session.total_inertia:.16f}\n")
+        if hasattr(session, "chi2_value") and getattr(session, "chi2_value", None):
+            output.write(f"カイ二乗値,{session.chi2_value:.16f}\n")
+        if hasattr(session, "degrees_of_freedom") and getattr(
+            session, "degrees_of_freedom", None
+        ):
+            output.write(f"自由度,{session.degrees_of_freedom}\n")
+        output.write("\n")
+
+        # 固有値データのセクション
+        if eigenvalue_data:
+            output.write("次元別情報\n")
+            output.write("次元,固有値,寄与率(%),累積寄与率(%)\n")
+
+            eigenvalue_data_sorted = sorted(
+                eigenvalue_data, key=lambda x: x.dimension_number
+            )
+            for ev in eigenvalue_data_sorted:
+                eigenvalue = ev.eigenvalue if ev.eigenvalue else 0
+                explained_inertia = ev.explained_inertia if ev.explained_inertia else 0
+                cumulative_inertia = (
+                    ev.cumulative_inertia if ev.cumulative_inertia else 0
+                )
+
+                output.write(
+                    f"第{ev.dimension_number}次元,{eigenvalue:.16f},{explained_inertia*100:.2f},{cumulative_inertia*100:.2f}\n"
+                )
+            output.write("\n")
+
+        # 座標データの処理
+        if coordinates_data:
+            # 行座標と列座標を安全に分離
+            row_coordinates = []
+            col_coordinates = []
+
+            for coord in coordinates_data:
+                # 座標データを安全に取得
+                coord_info = {
+                    "name": getattr(coord, "point_name", "Unknown"),
+                    "dimension_1": float(getattr(coord, "dimension_1", 0)),
+                    "dimension_2": float(getattr(coord, "dimension_2", 0)),
+                    "point_type": getattr(coord, "point_type", None),
+                }
+
+                # point_typeで分類
+                if coord_info["point_type"] == "row":
+                    row_coordinates.append(coord_info)
+                elif coord_info["point_type"] == "column":
+                    col_coordinates.append(coord_info)
+                else:
+                    # フォールバック: インデックスで判定
+                    coord_index = coordinates_data.index(coord)
+                    if coord_index < len(coordinates_data) // 2:
+                        row_coordinates.append(coord_info)
+                    else:
+                        col_coordinates.append(coord_info)
+
+            # 行座標の出力
+            if row_coordinates:
+                output.write("行座標（イメージ）\n")
+                output.write("項目名,第1次元,第2次元\n")
+                for coord in row_coordinates:
                     output.write(
-                        f"{coord.label},{coord.dimension_1:.6f},{coord.dimension_2:.6f},{coord.contribution or 0:.6f},{coord.quality or 0:.6f}\n"
+                        f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
                     )
                 output.write("\n")
 
-            if col_coords:
-                output.write("列座標\n")
-                output.write("項目名,第1次元,第2次元,寄与度,品質\n")
-                for coord in col_coords:
+            # 列座標の出力
+            if col_coordinates:
+                output.write("列座標（ブランド）\n")
+                output.write("項目名,第1次元,第2次元\n")
+                for coord in col_coordinates:
                     output.write(
-                        f"{coord.label},{coord.dimension_1:.6f},{coord.dimension_2:.6f},{coord.contribution or 0:.6f},{coord.quality or 0:.6f}\n"
+                        f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
                     )
                 output.write("\n")
+
+            print(
+                f"Processed {len(row_coordinates)} row coordinates and {len(col_coordinates)} column coordinates"
+            )
+
+        # データが見つからない場合の処理
+        if not coordinates_data and not eigenvalue_data:
+            output.write("座標データおよび固有値データが見つかりませんでした\n")
+            output.write("データベースの構造を確認してください\n")
 
         csv_content = output.getvalue()
         output.close()
 
         filename = f"analysis_results_{session_id}.csv"
+
+        print(f"Generated analysis CSV: {filename} ({len(csv_content)} characters)")
 
         return Response(
             content=csv_content.encode("utf-8-sig"),
