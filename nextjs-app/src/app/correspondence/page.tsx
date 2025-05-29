@@ -23,7 +23,6 @@ export default function CorrespondencePage() {
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'upload' | 'history'>('upload');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedSession, setSelectedSession] = useState<CorrespondenceAnalysisResult | null>(null);
 
   // セッション履歴を取得
   const fetchSessions = async () => {
@@ -35,21 +34,20 @@ export default function CorrespondencePage() {
         offset: '0',
       });
 
-      console.log('Fetching sessions...'); // デバッグログ追加
+      console.log('Fetching sessions...');
       
       const response = await fetch(`/api/sessions?${params.toString()}`);
       
-      console.log('Response status:', response.status); // デバッグログ追加
-      console.log('Response headers:', response.headers); // デバッグログ追加
+      console.log('Response status:', response.status);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const responseText = await response.text(); // まずテキストとして取得
-      console.log('Response text:', responseText); // デバッグログ追加
+      const responseText = await response.text();
+      console.log('Response text:', responseText);
       
-      const data = JSON.parse(responseText); // 手動でJSONパース
+      const data = JSON.parse(responseText);
       
       if (data.success) {
         setSessions(data.data);
@@ -145,15 +143,13 @@ export default function CorrespondencePage() {
     if (!confirm('このセッションを削除しますか？')) return;
 
     try {
-      // 正しいエンドポイントに修正
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE'
       });
       
       if (response.ok) {
-        fetchSessions(); // 一覧を再取得
-        if (selectedSession?.session_id === sessionId) {
-          setSelectedSession(null);
+        fetchSessions();
+        if (result?.session_id === sessionId) {
           setResult(null);
         }
       } else {
@@ -182,7 +178,6 @@ export default function CorrespondencePage() {
       const a = document.createElement('a');
       a.href = url;
       
-      // Content-Dispositionヘッダーからファイル名を取得
       const contentDisposition = response.headers.get('Content-Disposition');
       const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
       const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `session_${sessionId}_data.csv`;
@@ -239,14 +234,12 @@ export default function CorrespondencePage() {
     try {
       console.log('Downloading analysis CSV for session:', result.session_id);
       
-      // 新しい分析結果詳細CSVエンドポイントを使用
       const response = await fetch(`/api/sessions/${result.session_id}/analysis-csv`);
       
       if (!response.ok) {
         throw new Error('分析結果CSVの取得に失敗しました');
       }
 
-      // ファイルとしてダウンロード
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -289,7 +282,6 @@ export default function CorrespondencePage() {
           });
         }
 
-        // BOMを追加（Excelでの文字化け対策）
         const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
         const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = window.URL.createObjectURL(blob);
@@ -345,7 +337,6 @@ export default function CorrespondencePage() {
     setResult(null);
 
     try {
-      // Query parametersを構築
       const params = new URLSearchParams({
         session_name: sessionName.trim(),
         description: description.trim(),
@@ -357,7 +348,6 @@ export default function CorrespondencePage() {
       const formData = new FormData();
       formData.append('file', file);
 
-      // URLにquery parametersを追加
       const response = await fetch(`/api/analyze?${params.toString()}`, {
         method: 'POST',
         body: formData,
@@ -370,7 +360,6 @@ export default function CorrespondencePage() {
       }
 
       setResult(data as CorrespondenceAnalysisResult);
-      // 分析完了後に履歴を更新
       fetchSessions();
       
     } catch (err) {
@@ -429,14 +418,11 @@ export default function CorrespondencePage() {
 
         <div className="p-6">
           {activeTab === 'upload' ? (
-            // ファイルアップロードタブ
             <div className="space-y-6">
               <h2 className="text-xl font-semibold mb-4">新しいコレスポンデンス分析を実行</h2>
               
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* 左側: 設定フォーム */}
                 <div className="space-y-6">
-                  {/* セッション情報 */}
                   <div className="bg-gray-50 rounded-lg p-4 space-y-4">
                     <h3 className="font-medium text-gray-900">セッション情報</h3>
                     
@@ -481,7 +467,6 @@ export default function CorrespondencePage() {
                     </div>
                   </div>
 
-                  {/* 分析パラメータ */}
                   <div className="bg-gray-50 rounded-lg p-4 space-y-4">
                     <h3 className="font-medium text-gray-900">分析パラメータ</h3>
                     
@@ -503,7 +488,6 @@ export default function CorrespondencePage() {
                   </div>
                 </div>
 
-                {/* 右側: ファイルアップロード */}
                 <div className="space-y-6">
                   <div>
                     <h3 className="font-medium text-gray-900 mb-4">データファイル</h3>
@@ -545,7 +529,6 @@ export default function CorrespondencePage() {
               </div>
             </div>
           ) : (
-            // 分析履歴タブ
             <div className="space-y-6">
               <div className="flex justify-between items-center">
                 <h2 className="text-xl font-semibold">コレスポンデンス分析履歴</h2>
@@ -735,7 +718,7 @@ export default function CorrespondencePage() {
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-gray-600">抽出次元数:</dt>
-                  <dd className="font-medium">{result.data.eigenvalues.length}</dd>
+                  <dd className="font-medium">{result.data.eigenvalues?.length || 0}</dd>
                 </div>
               </dl>
             </div>
@@ -745,7 +728,7 @@ export default function CorrespondencePage() {
           <div className="mb-6">
             <h3 className="font-semibold mb-4">次元別寄与率</h3>
             <div className="space-y-3">
-              {result.data.explained_inertia.map((inertia, index) => (
+              {result.data.explained_inertia?.map((inertia, index) => (
                 <div key={index} className="flex items-center">
                   <span className="w-20 text-sm font-medium">第{index + 1}次元:</span>
                   <div className="flex-1 bg-gray-200 rounded-full h-3 mr-4">
@@ -758,35 +741,41 @@ export default function CorrespondencePage() {
                     {(inertia * 100).toFixed(1)}%
                   </span>
                   <span className="text-xs text-gray-500 w-20 text-right ml-2">
-                    (累積: {(result.data.cumulative_inertia[index] * 100).toFixed(1)}%)
+                    (累積: {((result.data.cumulative_inertia?.[index] || 0) * 100).toFixed(1)}%)
                   </span>
                 </div>
-              ))}
+              )) || (
+                <div className="text-center text-gray-500 py-4">
+                  寄与率データがありません
+                </div>
+              )}
             </div>
             
             {/* 寄与率の詳細表 */}
-            <div className="mt-4 overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="px-4 py-2 text-left">次元</th>
-                    <th className="px-4 py-2 text-right">固有値</th>
-                    <th className="px-4 py-2 text-right">寄与率</th>
-                    <th className="px-4 py-2 text-right">累積寄与率</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {result.data.eigenvalues.map((eigenvalue, index) => (
-                    <tr key={index} className="hover:bg-gray-50">
-                      <td className="px-4 py-2 font-medium">第{index + 1}次元</td>
-                      <td className="px-4 py-2 text-right">{eigenvalue.toFixed(4)}</td>
-                      <td className="px-4 py-2 text-right">{(result.data.explained_inertia[index] * 100).toFixed(2)}%</td>
-                      <td className="px-4 py-2 text-right">{(result.data.cumulative_inertia[index] * 100).toFixed(2)}%</td>
+            {result.data.eigenvalues && result.data.eigenvalues.length > 0 && (
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="px-4 py-2 text-left">次元</th>
+                      <th className="px-4 py-2 text-right">固有値</th>
+                      <th className="px-4 py-2 text-right">寄与率</th>
+                      <th className="px-4 py-2 text-right">累積寄与率</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {result.data.eigenvalues.map((eigenvalue, index) => (
+                      <tr key={index} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium">第{index + 1}次元</td>
+                        <td className="px-4 py-2 text-right">{eigenvalue.toFixed(4)}</td>
+                        <td className="px-4 py-2 text-right">{((result.data.explained_inertia?.[index] || 0) * 100).toFixed(2)}%</td>
+                        <td className="px-4 py-2 text-right">{((result.data.cumulative_inertia?.[index] || 0) * 100).toFixed(2)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           {/* プロット画像 */}
@@ -810,7 +799,7 @@ export default function CorrespondencePage() {
                   <ul className="text-sm text-blue-800 space-y-1">
                     <li>• 点が近いほど類似性が高い</li>
                     <li>• 原点からの距離が大きいほど特徴的</li>
-                    <li>• 第1-2次元で全体の{((result.data.explained_inertia[0] + (result.data.explained_inertia[1] || 0)) * 100).toFixed(1)}%を説明</li>
+                    <li>• 第1-2次元で全体の{(((result.data.explained_inertia?.[0] || 0) + (result.data.explained_inertia?.[1] || 0)) * 100).toFixed(1)}%を説明</li>
                   </ul>
                 </div>
                 
@@ -845,20 +834,29 @@ export default function CorrespondencePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.data.coordinates.rows.map((row: CoordinatePoint, index: number) => (
+                    {result.data.coordinates?.rows?.map((row: CoordinatePoint, index: number) => (
                       <tr key={index} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{row.name}</td>
                         <td className="p-2 text-right">{row.dimension_1?.toFixed(3) || '-'}</td>
                         <td className="p-2 text-right">{row.dimension_2?.toFixed(3) || '-'}</td>
                       </tr>
-                    ))}
-                    {result.metadata.row_names?.map((name, index) => (
+                    )) || []}
+                    {(!result.data.coordinates?.rows || result.data.coordinates.rows.length === 0) && 
+                     result.metadata.row_names?.map((name, index) => (
                       <tr key={`fallback-${index}`} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{name}</td>
                         <td className="p-2 text-right">-</td>
                         <td className="p-2 text-right">-</td>
                       </tr>
-                    ))}
+                    )) || []}
+                    {(!result.data.coordinates?.rows || result.data.coordinates.rows.length === 0) && 
+                     (!result.metadata.row_names || result.metadata.row_names.length === 0) && (
+                      <tr>
+                        <td colSpan={3} className="p-4 text-center text-gray-500">
+                          座標データがありません
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -880,20 +878,29 @@ export default function CorrespondencePage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.data.coordinates.columns.map((col: CoordinatePoint, index: number) => (
+                    {result.data.coordinates?.columns?.map((col: CoordinatePoint, index: number) => (
                       <tr key={index} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{col.name}</td>
                         <td className="p-2 text-right">{col.dimension_1?.toFixed(3) || '-'}</td>
                         <td className="p-2 text-right">{col.dimension_2?.toFixed(3) || '-'}</td>
                       </tr>
-                    ))}
-                    {result.metadata.column_names?.map((name, index) => (
+                    )) || []}
+                    {(!result.data.coordinates?.columns || result.data.coordinates.columns.length === 0) && 
+                     result.metadata.column_names?.map((name, index) => (
                       <tr key={`fallback-${index}`} className="hover:bg-gray-100">
                         <td className="p-2 font-medium">{name}</td>
                         <td className="p-2 text-right">-</td>
                         <td className="p-2 text-right">-</td>
                       </tr>
-                    ))}
+                    )) || []}
+                    {(!result.data.coordinates?.columns || result.data.coordinates.columns.length === 0) && 
+                     (!result.metadata.column_names || result.metadata.column_names.length === 0) && (
+                      <tr>
+                        <td colSpan={3} className="p-4 text-center text-gray-500">
+                          座標データがありません
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -908,7 +915,7 @@ export default function CorrespondencePage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </div>
-              <div className="ml-3">
+            <div className="ml-3">
                 <h3 className="text-sm font-medium text-yellow-800">分析結果の解釈について</h3>
                 <div className="mt-2 text-sm text-yellow-700 space-y-2">
                   <p>
@@ -916,10 +923,10 @@ export default function CorrespondencePage() {
                     データ全体の関連性の強さを示します。値が高いほどカテゴリ間の関連が強いことを意味します。
                   </p>
                   <p>
-                    <strong>第1-2次元の累積寄与率 ({((result.data.explained_inertia[0] + (result.data.explained_inertia[1] || 0)) * 100).toFixed(1)}%)</strong>: 
+                    <strong>第1-2次元の累積寄与率 ({(((result.data.explained_inertia?.[0] || 0) + (result.data.explained_inertia?.[1] || 0)) * 100).toFixed(1)}%)</strong>: 
                     2次元プロットで説明できる情報の割合です。一般的に70%以上であれば十分な説明力があるとされます。
                   </p>
-                  {((result.data.explained_inertia[0] + (result.data.explained_inertia[1] || 0)) * 100) < 70 && (
+                  {(((result.data.explained_inertia?.[0] || 0) + (result.data.explained_inertia?.[1] || 0)) * 100) < 70 && (
                     <p className="text-orange-700 font-medium">
                       ⚠️ 累積寄与率が70%未満のため、3次元以上での分析も検討することをお勧めします。
                     </p>
