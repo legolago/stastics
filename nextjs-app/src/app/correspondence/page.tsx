@@ -4,7 +4,9 @@ import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import AnalysisLayout from '../../components/AnalysisLayout';
 import FileUpload from '../../components/FileUpload';
-import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams } from '../../types/analysis';
+import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams,AnalysisResult,SessionDetailResponse } from '../../types/analysis';
+
+
 
 export default function CorrespondencePage() {
   const [file, setFile] = useState<File | null>(null);
@@ -68,35 +70,67 @@ export default function CorrespondencePage() {
     const fetchSessionDetail = async (sessionId: number) => {
       try {
         const response = await fetch(`/api/sessions/${sessionId}`);
-        const data = await response.json();
+        
+        if (!response.ok) {
+          console.error(`HTTP ${response.status}: ${response.statusText}`);
+          return;
+        }
 
-        if (data.success) {
-          // データ構造を変換してCorrespondenceAnalysisResult形式に合わせる
-          const convertedResult: CorrespondenceAnalysisResult = {
+        const data: SessionDetailResponse = await response.json();
+        console.log('Received session data:', data);
+
+        if (data.success && data.data) {
+          const sessionData = data.data;
+          
+          // 既存の型定義に合わせて変換
+          const analysisResult: AnalysisResult = {
             success: true,
-            session_id: data.session_info.session_id,
+            session_id: sessionData.session_id,
+            session_name: sessionData.session_name,
             analysis_type: 'correspondence',
+            plot_base64: "", // プロットデータは別途取得が必要
             data: {
-              total_inertia: data.analysis_data.total_inertia || 0,
-              chi2: data.analysis_data.chi2 || 0,
-              eigenvalues: data.analysis_data.eigenvalues.map((e: any) => e.eigenvalue),
-              explained_inertia: data.analysis_data.eigenvalues.map((e: any) => e.explained_inertia),
-              cumulative_inertia: data.analysis_data.eigenvalues.map((e: any) => e.cumulative_inertia),
-              degrees_of_freedom: data.analysis_data.degrees_of_freedom || 0,
-              plot_image: data.visualization.plot_image || ''
+              total_inertia: sessionData.total_inertia,
+              chi2: 0,
+              degrees_of_freedom: 0,
+              n_components: 2,
+              eigenvalues: [],
+              explained_inertia: [
+                sessionData.dimension_1_contribution,
+                sessionData.dimension_2_contribution
+              ],
+              cumulative_inertia: [
+                sessionData.dimension_1_contribution,
+                sessionData.dimension_1_contribution + sessionData.dimension_2_contribution
+              ],
+              plot_image: "", // plot_base64と重複だが既存構造に合わせる
+              coordinates: {
+                rows: [],
+                columns: []
+              }
             },
             metadata: {
-              session_name: data.session_info.session_name,
-              filename: data.session_info.filename,
-              rows: data.metadata.row_count || 0,
-              columns: data.metadata.column_count || 0,
-              row_names: data.analysis_data.coordinates.rows.map((r: any) => r.name),
-              column_names: data.analysis_data.coordinates.columns.map((c: any) => c.name)
+              session_name: sessionData.session_name,
+              filename: sessionData.filename,
+              rows: sessionData.row_count,
+              columns: sessionData.column_count,
+              row_names: [],
+              column_names: []
+            },
+            session_info: {
+              session_id: sessionData.session_id,
+              session_name: sessionData.session_name,
+              description: sessionData.description,
+              tags: sessionData.tags,
+              analysis_timestamp: sessionData.analysis_timestamp,
+              filename: sessionData.filename,
+              analysis_type: sessionData.analysis_type,
+              row_count: sessionData.row_count,
+              column_count: sessionData.column_count
             }
           };
-          
-          setSelectedSession(convertedResult);
-          setResult(convertedResult);
+
+          setResult(analysisResult);
         }
       } catch (err) {
         console.error('セッション詳細取得エラー:', err);
@@ -104,11 +138,13 @@ export default function CorrespondencePage() {
     };
 
   // セッションを削除
+  // page.tsx内のdeleteSession関数を修正
   const deleteSession = async (sessionId: number) => {
     if (!confirm('このセッションを削除しますか？')) return;
 
     try {
-      const response = await fetch(`/api/sessions/${sessionId}`, {
+      // 正しいエンドポイントに修正（例）
+      const response = await fetch(`/api/correspondence/sessions/${sessionId}`, {
         method: 'DELETE'
       });
       
@@ -118,9 +154,14 @@ export default function CorrespondencePage() {
           setSelectedSession(null);
           setResult(null);
         }
+      } else {
+        const errorData = await response.json();
+        console.error('削除エラー:', errorData);
+        alert('削除に失敗しました');
       }
     } catch (err) {
       console.error('セッション削除エラー:', err);
+      alert('削除中にエラーが発生しました');
     }
   };
 
@@ -592,7 +633,7 @@ export default function CorrespondencePage() {
                     </svg>
                     元CSV
                   </button>
-                                    <button
+                  <button
                     onClick={() => downloadAnalysisResultCSV(result)}
                     className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 text-sm flex items-center"
                   >

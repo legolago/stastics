@@ -214,3 +214,72 @@ export interface StatsSummary {
     format?: 'number' | 'percentage' | 'decimal';
   };
 }
+
+// 既存のCorrespondenceAnalysisResultを拡張
+export interface AnalysisResult extends CorrespondenceAnalysisResult {
+  session_name: string;
+  plot_base64: string;
+  session_info: {
+    session_id: number;
+    session_name: string;
+    description: string;
+    tags: string[];
+    analysis_timestamp: string;
+    filename: string;
+    analysis_type?: string;
+    row_count?: number;
+    column_count?: number;
+  };
+  data: {
+    total_inertia: number;
+    chi2: number;
+    degrees_of_freedom: number;
+    n_components: number;
+    eigenvalues: number[];
+    explained_inertia: number[];
+    cumulative_inertia: number[];
+    plot_image: string;
+    coordinates: {
+      rows: Array<{
+        name: string;
+        dimension_1: number;
+        dimension_2: number;
+      }>;
+      columns: Array<{
+        name: string;
+        dimension_1: number;
+        dimension_2: number;
+      }>;
+    };
+  };
+}
+
+// 座標データ用の型
+export interface CoordinatePoint {
+  name: string;
+  dimension_1: number;
+  dimension_2: number;
+}
+
+export interface CoordinatesData {
+  rows: CoordinatePoint[];
+  columns: CoordinatePoint[];
+}
+
+// セッション詳細レスポンス用の型
+export interface SessionDetailResponse extends ApiResponse {
+  data: {
+    session_id: number;
+    session_name: string;
+    filename: string;
+    description: string;
+    tags: string[];
+    analysis_timestamp: string;
+    analysis_type: string;
+    total_inertia: number;
+    dimension_1_contribution: number;
+    dimension_2_contribution: number;
+    row_count: number;
+    column_count: number;
+  };
+}

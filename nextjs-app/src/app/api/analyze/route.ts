@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
     const userId = searchParams.get('user_id') || 'default';
     const nComponents = searchParams.get('n_components') || '2';
 
-    console.log('Received parameters:', { sessionName, description, tags, userId, nComponents });
+    console.log('Received parameters:', { sessionName, description, tags, userId, nComponents }); // デバッグログ
 
     if (!file) {
       return NextResponse.json(
@@ -56,9 +56,8 @@ export async function POST(request: NextRequest) {
     const pythonFormData = new FormData();
     pythonFormData.append('file', file);
 
-    // 正しいエンドポイントを使用
     const pythonUrl = `${PYTHON_API_URL}/api/correspondence/analyze?${params.toString()}`;
-    console.log('Calling Python API:', pythonUrl);
+    console.log('Calling Python API:', pythonUrl); // デバッグログ
 
     // Python APIを呼び出し
     const response = await fetch(pythonUrl, {
