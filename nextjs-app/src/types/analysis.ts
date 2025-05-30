@@ -14,11 +14,20 @@ export interface AnalysisSession {
   dimension_2_contribution?: number;
   row_count: number;
   column_count: number;
+  // PCA用のプロパティを追加
+  chi2_value?: number; // コレスポンデンス分析ではカイ二乗値、PCAではKMO値として使用
+  degrees_of_freedom?: number; // コレスポンデンス分析では自由度、PCAでは主成分数として使用
 }
 
 // コレスポンデンス分析のパラメータ
 export interface CorrespondenceParams {
   n_components: number;
+}
+
+// PCA分析のパラメータ
+export interface PCAParams {
+  n_components: number;
+  standardize: boolean;
 }
 
 // 座標データ
@@ -31,6 +40,12 @@ export interface CoordinatePoint {
 export interface CoordinatesData {
   rows: CoordinatePoint[];
   columns: CoordinatePoint[];
+}
+
+// PCA用の座標データ
+export interface PCACoordinatesData {
+  scores: CoordinatePoint[]; // 主成分得点
+  loadings: CoordinatePoint[]; // 主成分負荷量
 }
 
 // 固有値データ
@@ -49,6 +64,16 @@ export interface AnalysisData {
   dimensions_count?: number;
   eigenvalues?: EigenvalueInfo[];
   coordinates?: CoordinatesData;
+  // PCA用のプロパティ
+  n_components?: number;
+  n_samples?: number;
+  n_features?: number;
+  standardized?: boolean;
+  explained_variance_ratio?: number[];
+  cumulative_variance_ratio?: number[];
+  kmo?: number;
+  determinant?: number;
+  pca_coordinates?: PCACoordinatesData;
 }
 
 // 可視化データ
@@ -107,6 +132,21 @@ export interface CorrespondenceAnalysisData {
   coordinates: CoordinatesData;
 }
 
+// PCA分析の結果データ
+export interface PCAAnalysisData {
+  n_components: number;
+  n_samples: number;
+  n_features: number;
+  standardized: boolean;
+  explained_variance_ratio: number[];
+  cumulative_variance_ratio: number[];
+  eigenvalues: number[];
+  kmo: number;
+  determinant: number;
+  plot_image: string;
+  coordinates: PCACoordinatesData;
+}
+
 // コレスポンデンス分析のメタデータ
 export interface AnalysisMetadata {
   session_name?: string;
@@ -115,6 +155,16 @@ export interface AnalysisMetadata {
   columns: number;
   row_names?: string[];
   column_names?: string[];
+}
+
+// PCA分析のメタデータ
+export interface PCAMetadata {
+  session_name: string;
+  filename: string;
+  rows: number;
+  columns: number;
+  sample_names: string[];
+  feature_names: string[];
 }
 
 // セッション情報（簡略版）
@@ -139,6 +189,18 @@ export interface CorrespondenceAnalysisResult {
   plot_base64?: string;
   data: CorrespondenceAnalysisData;
   metadata: AnalysisMetadata;
+  session_info?: AnalysisSessionInfo;
+}
+
+// PCA分析の結果（統合型）
+export interface PCAAnalysisResult {
+  success: boolean;
+  session_id: number;
+  session_name?: string;
+  analysis_type: 'pca';
+  plot_base64?: string;
+  data: PCAAnalysisData;
+  metadata: PCAMetadata;
   session_info?: AnalysisSessionInfo;
 }
 
@@ -178,6 +240,9 @@ export interface SessionListResponse {
 // 分析実行のレスポンス
 export interface AnalyzeResponse extends CorrespondenceAnalysisResult {}
 
+// PCA分析実行のレスポンス
+export interface PCAAnalyzeResponse extends PCAAnalysisResult {}
+
 // ファイルアップロードの設定
 export interface FileUploadConfig {
   accept: string;
@@ -192,4 +257,13 @@ export interface AnalysisConfig {
   tags?: string;
   user_id?: string;
   parameters: CorrespondenceParams;
+}
+
+// PCA分析設定
+export interface PCAAnalysisConfig {
+  session_name: string;
+  description?: string;
+  tags?: string;
+  user_id?: string;
+  parameters: PCAParams;
 }

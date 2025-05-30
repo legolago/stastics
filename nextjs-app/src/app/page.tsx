@@ -34,7 +34,7 @@ export default function StatisticsHomePage() {
       id: 'pca',
       name: '主成分分析（PCA）',
       description: '多変量データの次元削減を行い、主要な変動要因を特定します',
-      status: 'development',
+      status: 'available',
       path: '/pca',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">

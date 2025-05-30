@@ -1,4 +1,4 @@
-//src/app/apicorrespondence/analyze/route.ts - 修正版（エンドポイント統一のみ）
+//src/app/api/pca/analyze/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -30,23 +30,28 @@ interface SuccessResponse {
     [key: string]: any;
   };
   data: {
-    coordinates?: {
-      rows?: Array<{
+    n_components: number;
+    n_samples: number;
+    n_features: number;
+    standardized: boolean;
+    explained_variance_ratio: number[];
+    cumulative_variance_ratio: number[];
+    eigenvalues: number[];
+    kmo: number;
+    determinant: number;
+    plot_image: string;
+    coordinates: {
+      scores: Array<{
+        name: string;
         dimension_1: number;
         dimension_2: number;
-        name: string;
       }>;
-      columns?: Array<{
+      loadings: Array<{
+        name: string;
         dimension_1: number;
         dimension_2: number;
-        name: string;
       }>;
     };
-    eigenvalues?: Array<{
-      value: number;
-      proportion: number;
-      cumulative: number;
-    }>;
     [key: string]: any;
   };
 }
@@ -56,8 +61,8 @@ const ERROR_MESSAGES = {
     '・1行目にヘッダー（列名）があること\n' +
     '・1列目に行ラベルがあること\n' +
     '・数値データが2行2列以上あること\n' +
-    '・すべての数値が非負であること',
-  ZERO_VALUES: '有効なデータが見つかりません。すべての行と列に少なくとも1つの非ゼロ値が必要です。',
+    '・すべての数値が有効であること',
+  ZERO_VALUES: '有効なデータが見つかりません。各変数に十分なバリエーションが必要です。',
   PARSE_ERROR: 'CSVファイルの解析に失敗しました。文字コードがUTF-8であることを確認してください。',
   FILE_ERROR: 'ファイルの処理中にエラーが発生しました。',
   NETWORK_ERROR: 'ネットワークエラーが発生しました。',
@@ -77,15 +82,20 @@ function validateRequestParams(params: URLSearchParams): void {
   if (isNaN(n_components) || n_components < 2) {
     throw new Error('n_components は2以上の整数である必要があります');
   }
+
+  // standardizeパラメータのバリデーション
+  const standardize = params.get('standardize');
+  if (standardize && !['true', 'false'].includes(standardize.toLowerCase())) {
+    throw new Error('standardize は true または false である必要があります');
+  }
 }
 
-// ファイルのバリデーション（サーバーサイド対応）
+// ファイルのバリデーション
 function validateFormDataFile(file: File | Blob, fileName?: string): void {
   if (file.size === 0) {
     throw new Error('ファイルが空です');
   }
 
-  // ファイル名のチェック（FormDataから取得した場合）
   const name = fileName || (file as any).name || '';
   if (name && !name.toLowerCase().endsWith('.csv')) {
     throw new Error('CSVファイルのみがサポートされています');
@@ -97,7 +107,7 @@ function validateFormDataFile(file: File | Blob, fileName?: string): void {
   }
 }
 
-// CSVファイルの内容を検証（Blob対応）
+// CSVファイルの内容を検証
 async function validateCsvContent(file: Blob): Promise<void> {
   const content = await file.text();
   const lines = content.split('\n').map(line => line.trim()).filter(Boolean);
@@ -121,7 +131,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
     // リクエストパラメータの取得とバリデーション
     const { searchParams } = new URL(request.url);
     validateRequestParams(searchParams);
-    console.log('Received request parameters:', Object.fromEntries(searchParams));
+    console.log('Received PCA request parameters:', Object.fromEntries(searchParams));
 
     // FormDataの取得と検証
     const formData = await request.formData();
@@ -131,27 +141,25 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
       throw new Error('ファイルが添付されていないか、不正な形式です');
     }
 
-    // ファイル名を安全に取得
     const fileName = (file as any).name || 'unknown.csv';
     
     validateFormDataFile(file, fileName);
     await validateCsvContent(file);
 
-    console.log('File info:', {
+    console.log('PCA File info:', {
       name: fileName,
       size: file.size,
       type: file.type,
-      // lastModifiedはBlobには存在しない可能性があるため条件付きで取得
       lastModified: (file as any).lastModified ? new Date((file as any).lastModified).toISOString() : 'unknown'
     });
 
-    // 🔧 修正箇所: エンドポイントを統一パスに変更
-    const pythonUrl = new URL('/api/correspondence/analyze', PYTHON_API_URL);
+    // Python APIエンドポイントの構築 - 正しいパスに修正
+    const pythonUrl = new URL('/api/pca/analyze', PYTHON_API_URL);
     searchParams.forEach((value, key) => {
       pythonUrl.searchParams.append(key, value);
     });
 
-    console.log('Calling Python API:', pythonUrl.toString());
+    console.log('Calling Python PCA API:', pythonUrl.toString());
 
     try {
       const response = await fetch(pythonUrl.toString(), {
@@ -169,12 +177,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
       try {
         responseData = JSON.parse(responseText);
       } catch (e) {
-        console.error('Failed to parse response:', responseText);
+        console.error('Failed to parse PCA response:', responseText);
         throw new Error(ERROR_MESSAGES.PARSE_ERROR);
       }
 
       if (!response.ok) {
-        console.error('Python API Error:', {
+        console.error('Python PCA API Error:', {
           status: response.status,
           statusText: response.statusText,
           data: responseData,
@@ -182,7 +190,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
         });
 
         // エラーメッセージのカスタマイズ
-        let errorMessage = 'データの分析中にエラーが発生しました';
+        let errorMessage = 'PCA分析中にエラーが発生しました';
         let errorDetail = responseData.detail;
         let hints = [
           'CSVファイルの内容を確認してください',
@@ -191,15 +199,15 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
         ];
 
         // 特定のエラーパターンに対する詳細な対応
-        if (responseData?.detail?.includes('(0, 0)')) {
+        if (responseData?.detail?.includes('有効なデータが不足')) {
           errorMessage = ERROR_MESSAGES.DATA_FORMAT;
           errorDetail = ERROR_MESSAGES.ZERO_VALUES;
           hints = [
             'CSVファイルの1行目にヘッダーが含まれていることを確認してください',
             '1列目に行ラベルが含まれていることを確認してください',
             'データ部分（2行目以降、2列目以降）に数値データがあることを確認してください',
-            'すべての数値が非負であることを確認してください',
-            '各行・各列に少なくとも1つの非ゼロ値があることを確認してください'
+            '各変数に十分なバリエーション（分散）があることを確認してください',
+            '定数列（すべて同じ値の列）がないことを確認してください'
           ];
         } else if (responseData?.detail?.includes('empty')) {
           errorMessage = 'データファイルが空または無効です';
@@ -216,7 +224,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
           ];
         }
 
-        // デバッグ情報の表示（ファイル内容の安全な取得）
+        // デバッグ情報の表示
         let fileContent = '';
         try {
           fileContent = await file.text();
@@ -224,13 +232,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
           console.warn('Could not read file content for debugging:', e);
           fileContent = 'ファイル内容を読み取れませんでした';
         }
+        
         return NextResponse.json({
           success: false,
           error: errorMessage,
           detail: errorDetail,
           hints: hints,
           debug: {
-            filePreview: fileContent.split('\n').slice(0, 5), // 最初の5行を表示
+            filePreview: fileContent.split('\n').slice(0, 5),
             requestInfo: {
               url: pythonUrl.toString(),
               params: Object.fromEntries(searchParams)
@@ -243,7 +252,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
         } as ErrorResponse, { status: response.status });
       }
 
-      console.log('Analysis completed in', Date.now() - startTime, 'ms');
+      console.log('PCA Analysis completed in', Date.now() - startTime, 'ms');
       
       return NextResponse.json({
         success: true,
@@ -255,7 +264,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
     }
 
   } catch (error) {
-    console.error('Analysis API Error:', {
+    console.error('PCA Analysis API Error:', {
       name: error instanceof Error ? error.name : 'Unknown',
       message: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
@@ -264,7 +273,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
 
     const errorResponse: ErrorResponse = {
       success: false,
-      error: error instanceof Error ? error.message : 'データの分析中にエラーが発生しました',
+      error: error instanceof Error ? error.message : 'PCA分析中にエラーが発生しました',
       detail: error instanceof Error ? error.stack : String(error),
       hints: [
         'ファイルの形式が正しいことを確認してください',
