@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 from models import create_tables
 
 # ルーターのインポート
-from routers import correspondence, sessions
+from routers import correspondence, sessions, pca, factor
 
 # PCAのインポート - ファイルの場所に応じて以下のいずれかを使用
 try:
@@ -51,13 +51,14 @@ app.add_middleware(
 # ルーターを登録
 app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
-
+app.include_router(pca.router, prefix="/api")
+app.include_router(factor.router, prefix="/api")  # 因子分析ルーターを追加
 # PCAルーターを条件付きで登録
-if pca_available:
-    app.include_router(pca.router, prefix="/api")
-    print("✓ PCA router registered at /api/pca")
-else:
-    print("⚠️ PCA router not registered - file not found")
+# if pca_available:
+#     app.include_router(pca.router, prefix="/api")
+#     print("✓ PCA router registered at /api/pca")
+# else:
+#     print("⚠️ PCA router not registered - file not found")
 
 
 @app.get("/")

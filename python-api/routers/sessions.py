@@ -12,6 +12,7 @@ from models import (
     CoordinatesData,
     VisualizationData,
     EigenvalueData,
+    AnalysisMetadata,
     get_db,
 )
 
@@ -23,6 +24,7 @@ async def get_analysis_sessions(
     user_id: str = Query("default", description="ユーザーID"),
     search: str = Query(None, description="検索キーワード"),
     tags: str = Query(None, description="タグフィルター（カンマ区切り）"),
+    analysis_type: str = Query(None, description="分析タイプフィルター"),
     limit: int = Query(20, description="取得件数"),
     offset: int = Query(0, description="オフセット"),
     db: Session = Depends(get_db),
@@ -30,6 +32,11 @@ async def get_analysis_sessions(
     """保存された分析セッションの一覧を取得"""
     try:
         query = db.query(AnalysisSession).filter(AnalysisSession.user_id == user_id)
+
+        # 分析タイプでフィルター（新機能）
+        if analysis_type:
+            query = query.filter(AnalysisSession.analysis_type == analysis_type)
+            print(f"Filtering by analysis_type: {analysis_type}")
 
         # 検索キーワードでフィルター
         if search:
@@ -52,6 +59,8 @@ async def get_analysis_sessions(
         total = query.count()
         sessions = query.offset(offset).limit(limit).all()
 
+        print(f"Found {total} sessions total, returning {len(sessions)} sessions")
+
         # レスポンス形式を整理
         results = []
         for session in sessions:
@@ -69,6 +78,7 @@ async def get_analysis_sessions(
                 "total_inertia": (
                     float(session.total_inertia) if session.total_inertia else None
                 ),
+                "dimensions_count": getattr(session, "dimensions_count", None),
                 "dimension_1_contribution": (
                     float(session.dimension_1_contribution)
                     if hasattr(session, "dimension_1_contribution")
@@ -128,7 +138,23 @@ async def delete_analysis_session(
 
         # 関連データを削除（外部キー制約に配慮して順番に削除）
 
-        # 1. 可視化データを削除
+        # 1. メタデータを削除（新しいテーブル）
+        metadata_count = 0
+        try:
+            metadata_count = (
+                db.query(AnalysisMetadata)
+                .filter(AnalysisMetadata.session_id == session_id)
+                .count()
+            )
+            if metadata_count > 0:
+                db.query(AnalysisMetadata).filter(
+                    AnalysisMetadata.session_id == session_id
+                ).delete()
+                print(f"Deleted {metadata_count} metadata records")
+        except Exception as meta_error:
+            print(f"Could not delete metadata: {meta_error}")
+
+        # 2. 可視化データを削除
         visualization_count = (
             db.query(VisualizationData)
             .filter(VisualizationData.session_id == session_id)
@@ -140,7 +166,7 @@ async def delete_analysis_session(
             ).delete()
             print(f"Deleted {visualization_count} visualization records")
 
-        # 2. 座標データを削除
+        # 3. 座標データを削除
         coordinates_count = (
             db.query(CoordinatesData)
             .filter(CoordinatesData.session_id == session_id)
@@ -152,7 +178,7 @@ async def delete_analysis_session(
             ).delete()
             print(f"Deleted {coordinates_count} coordinates records")
 
-        # 3. 固有値データを削除
+        # 4. 固有値データを削除
         eigenvalue_count = (
             db.query(EigenvalueData)
             .filter(EigenvalueData.session_id == session_id)
@@ -164,7 +190,7 @@ async def delete_analysis_session(
             ).delete()
             print(f"Deleted {eigenvalue_count} eigenvalue records")
 
-        # 4. 元データを削除
+        # 5. 元データを削除
         original_data_count = (
             db.query(OriginalData).filter(OriginalData.session_id == session_id).count()
         )
@@ -174,7 +200,7 @@ async def delete_analysis_session(
             ).delete()
             print(f"Deleted {original_data_count} original data records")
 
-        # 5. 最後にセッション自体を削除
+        # 6. 最後にセッション自体を削除
         db.delete(session)
 
         # 変更をコミット
@@ -187,6 +213,7 @@ async def delete_analysis_session(
             "message": f"セッション '{session.session_name}' を正常に削除しました",
             "deleted_session_id": session_id,
             "deleted_counts": {
+                "metadata": metadata_count,
                 "visualization_data": visualization_count,
                 "coordinates_data": coordinates_count,
                 "eigenvalue_data": eigenvalue_count,
@@ -225,6 +252,10 @@ async def get_analysis_session(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
+        # analysis_typeを安全に取得
+        analysis_type = getattr(session, "analysis_type", "correspondence")
+        print(f"Loading session {session_id} of type: {analysis_type}")
+
         # 関連データを取得
         coordinates = (
             db.query(CoordinatesData)
@@ -242,9 +273,28 @@ async def get_analysis_session(
             .first()
         )
 
+        # 因子分析特有のメタデータを取得
+        factor_metadata = None
+        if analysis_type == "factor":
+            try:
+                factor_metadata = (
+                    db.query(AnalysisMetadata)
+                    .filter(AnalysisMetadata.session_id == session_id)
+                    .all()
+                )
+                print(
+                    f"Found {len(factor_metadata) if factor_metadata else 0} factor metadata records"
+                )
+            except Exception as meta_error:
+                print(f"Could not load factor metadata: {meta_error}")
+                factor_metadata = None
+
         # 座標データを整理
         row_coords = []
         col_coords = []
+        variable_coords = []  # 因子分析用
+        observation_coords = []  # 因子分析用
+
         for coord in coordinates:
             coord_data = {
                 "name": getattr(coord, "point_name", "Unknown"),
@@ -258,6 +308,10 @@ async def get_analysis_session(
                 row_coords.append(coord_data)
             elif point_type == "column":
                 col_coords.append(coord_data)
+            elif point_type == "variable":  # 因子分析用
+                variable_coords.append(coord_data)
+            elif point_type == "observation":  # 因子分析用
+                observation_coords.append(coord_data)
             else:
                 # フォールバック: インデックスで判定
                 coord_index = coordinates.index(coord)
@@ -288,8 +342,13 @@ async def get_analysis_session(
                 }
             )
 
-        # analysis_typeを安全に取得
-        analysis_type = getattr(session, "analysis_type", "correspondence")
+        # 因子分析特有のデータ構造
+        factor_analysis_data = {}
+        if analysis_type == "factor" and factor_metadata:
+            for metadata in factor_metadata:
+                metadata_type = getattr(metadata, "metadata_type", "")
+                metadata_content = getattr(metadata, "metadata_content", {})
+                factor_analysis_data[metadata_type] = metadata_content
 
         result = {
             "success": True,
@@ -301,6 +360,7 @@ async def get_analysis_session(
                 "tags": session.tags or [],
                 "analysis_timestamp": session.analysis_timestamp.isoformat(),
                 "user_id": session.user_id,
+                "analysis_type": analysis_type,
             },
             "analysis_data": {
                 "total_inertia": (
@@ -314,12 +374,23 @@ async def get_analysis_session(
                 "degrees_of_freedom": getattr(session, "degrees_of_freedom", None),
                 "dimensions_count": len(eigenvalue_data),
                 "eigenvalues": eigenvalue_data,
-                "coordinates": {"rows": row_coords, "columns": col_coords},
+                "coordinates": {
+                    "rows": row_coords,
+                    "columns": col_coords,
+                    # 因子分析用の座標データ
+                    "variables": variable_coords,
+                    "observations": observation_coords,
+                },
+                # 因子分析特有のデータ
+                "factor_data": (
+                    factor_analysis_data if analysis_type == "factor" else None
+                ),
             },
             "metadata": {
                 "row_count": session.row_count,
                 "column_count": session.column_count,
                 "file_size": getattr(session, "file_size", None),
+                "analysis_type": analysis_type,
             },
             "visualization": {
                 "plot_image": (
@@ -547,8 +618,9 @@ async def download_plot_image(
         if not image_data:
             raise HTTPException(status_code=404, detail="画像データが見つかりません")
 
-        # ファイル名を設定
-        filename = f"analysis_{session_id}_plot.png"
+        # 分析タイプに応じたファイル名設定
+        analysis_type = getattr(session, "analysis_type", "analysis")
+        filename = f"{analysis_type}_{session_id}_plot.png"
 
         print(f"Returning image file: {filename}")
         return Response(
@@ -588,6 +660,9 @@ async def download_analysis_results_csv(
                 status_code=404, detail="指定されたセッションが見つかりません"
             )
 
+        analysis_type = getattr(session, "analysis_type", "correspondence")
+        print(f"Generating {analysis_type} analysis CSV")
+
         # 関連データを取得
         coordinates_data = (
             db.query(CoordinatesData)
@@ -600,32 +675,50 @@ async def download_analysis_results_csv(
             .all()
         )
 
+        # 因子分析の場合はメタデータも取得
+        factor_metadata = None
+        if analysis_type == "factor":
+            try:
+                factor_metadata = (
+                    db.query(AnalysisMetadata)
+                    .filter(AnalysisMetadata.session_id == session_id)
+                    .all()
+                )
+                print(
+                    f"Found {len(factor_metadata) if factor_metadata else 0} factor metadata records"
+                )
+            except Exception as meta_error:
+                print(f"Could not load factor metadata: {meta_error}")
+
         print(f"Found {len(coordinates_data)} coordinate records")
         print(f"Found {len(eigenvalue_data)} eigenvalue records")
-
-        # 座標データの属性を確認
-        if coordinates_data:
-            first_coord = coordinates_data[0]
-            available_attrs = [
-                attr for attr in dir(first_coord) if not attr.startswith("_")
-            ]
-            print(f"Available coordinate attributes: {available_attrs}")
 
         output = io.StringIO()
 
         # ヘッダー情報
-        output.write("分析結果サマリー\n")
+        if analysis_type == "factor":
+            output.write("因子分析結果\n")
+        elif analysis_type == "pca":
+            output.write("主成分分析結果\n")
+        else:
+            output.write("コレスポンデンス分析結果\n")
+
         output.write(f"セッション名,{session.session_name}\n")
         output.write(f"ファイル名,{getattr(session, 'original_filename', 'unknown')}\n")
         output.write(
             f"分析日時,{session.analysis_timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
         )
         output.write(f"データサイズ,{session.row_count}行 × {session.column_count}列\n")
+        output.write(f"分析タイプ,{analysis_type}\n")
 
         if hasattr(session, "total_inertia") and session.total_inertia:
-            output.write(f"総慣性,{session.total_inertia:.16f}\n")
+            if analysis_type == "factor":
+                output.write(f"総分散説明率,{session.total_inertia:.6f}\n")
+            else:
+                output.write(f"総慣性,{session.total_inertia:.6f}\n")
+
         if hasattr(session, "chi2_value") and getattr(session, "chi2_value", None):
-            output.write(f"カイ二乗値,{session.chi2_value:.16f}\n")
+            output.write(f"カイ二乗値,{session.chi2_value:.6f}\n")
         if hasattr(session, "degrees_of_freedom") and getattr(
             session, "degrees_of_freedom", None
         ):
@@ -634,8 +727,15 @@ async def download_analysis_results_csv(
 
         # 固有値データのセクション
         if eigenvalue_data:
-            output.write("次元別情報\n")
-            output.write("次元,固有値,寄与率(%),累積寄与率(%)\n")
+            if analysis_type == "factor":
+                output.write("因子別情報\n")
+                output.write("因子,固有値,寄与率(%),累積寄与率(%)\n")
+            elif analysis_type == "pca":
+                output.write("主成分別情報\n")
+                output.write("主成分,固有値,寄与率(%),累積寄与率(%)\n")
+            else:
+                output.write("次元別情報\n")
+                output.write("次元,固有値,寄与率(%),累積寄与率(%)\n")
 
             eigenvalue_data_sorted = sorted(
                 eigenvalue_data, key=lambda x: x.dimension_number
@@ -647,16 +747,62 @@ async def download_analysis_results_csv(
                     ev.cumulative_inertia if ev.cumulative_inertia else 0
                 )
 
+                if analysis_type == "factor":
+                    label = f"因子{ev.dimension_number}"
+                elif analysis_type == "pca":
+                    label = f"第{ev.dimension_number}主成分"
+                else:
+                    label = f"第{ev.dimension_number}次元"
+
                 output.write(
-                    f"第{ev.dimension_number}次元,{eigenvalue:.16f},{explained_inertia*100:.2f},{cumulative_inertia*100:.2f}\n"
+                    f"{label},{eigenvalue:.8f},{explained_inertia*100:.2f},{cumulative_inertia*100:.2f}\n"
                 )
             output.write("\n")
 
+        # 因子分析特有のメタデータ出力
+        if analysis_type == "factor" and factor_metadata:
+            for metadata in factor_metadata:
+                metadata_type = getattr(metadata, "metadata_type", "")
+                metadata_content = getattr(metadata, "metadata_content", {})
+
+                if metadata_type == "factor_loadings" and isinstance(
+                    metadata_content, dict
+                ):
+                    output.write("因子負荷量\n")
+                    loadings = metadata_content.get("loadings", [])
+                    feature_names = metadata_content.get("feature_names", [])
+                    n_factors = metadata_content.get("n_factors", 0)
+
+                    # ヘッダー
+                    header = (
+                        "変数,"
+                        + ",".join([f"因子{i+1}" for i in range(n_factors)])
+                        + ",共通性\n"
+                    )
+                    output.write(header)
+
+                    # データ
+                    communalities = metadata_content.get("communalities", [])
+                    for i, feature in enumerate(feature_names):
+                        if i < len(loadings):
+                            loading_values = ",".join(
+                                [f"{val:.3f}" for val in loadings[i]]
+                            )
+                            communality = (
+                                communalities[i] if i < len(communalities) else 0
+                            )
+                            output.write(
+                                f"{feature},{loading_values},{communality:.3f}\n"
+                            )
+                    output.write("\n")
+
         # 座標データの処理
         if coordinates_data:
-            # 行座標と列座標を安全に分離
+            # 座標データを分析タイプに応じて分類
             row_coordinates = []
             col_coordinates = []
+            variable_coordinates = []  # 因子分析・PCA用
+            observation_coordinates = []  # 因子分析・PCA用
 
             for coord in coordinates_data:
                 # 座標データを安全に取得
@@ -672,36 +818,92 @@ async def download_analysis_results_csv(
                     row_coordinates.append(coord_info)
                 elif coord_info["point_type"] == "column":
                     col_coordinates.append(coord_info)
+                elif coord_info["point_type"] == "variable":
+                    variable_coordinates.append(coord_info)
+                elif coord_info["point_type"] == "observation":
+                    observation_coordinates.append(coord_info)
                 else:
                     # フォールバック: インデックスで判定
                     coord_index = coordinates_data.index(coord)
-                    if coord_index < len(coordinates_data) // 2:
-                        row_coordinates.append(coord_info)
+                    if analysis_type in ["factor", "pca"]:
+                        # 因子分析・PCAの場合
+                        if coord_index < len(coordinates_data) // 2:
+                            variable_coordinates.append(coord_info)
+                        else:
+                            observation_coordinates.append(coord_info)
                     else:
-                        col_coordinates.append(coord_info)
+                        # コレスポンデンス分析の場合
+                        if coord_index < len(coordinates_data) // 2:
+                            row_coordinates.append(coord_info)
+                        else:
+                            col_coordinates.append(coord_info)
 
-            # 行座標の出力
-            if row_coordinates:
-                output.write("行座標（イメージ）\n")
-                output.write("項目名,第1次元,第2次元\n")
-                for coord in row_coordinates:
-                    output.write(
-                        f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                    )
-                output.write("\n")
+            # 分析タイプに応じて座標データを出力
+            if analysis_type == "factor":
+                # 因子分析の場合
+                if variable_coordinates:
+                    output.write("変数の因子得点\n")
+                    output.write("変数名,因子1,因子2\n")
+                    for coord in variable_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
 
-            # 列座標の出力
-            if col_coordinates:
-                output.write("列座標（ブランド）\n")
-                output.write("項目名,第1次元,第2次元\n")
-                for coord in col_coordinates:
-                    output.write(
-                        f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                    )
-                output.write("\n")
+                if observation_coordinates:
+                    output.write("観測値の因子得点\n")
+                    output.write("観測名,因子1,因子2\n")
+                    for coord in observation_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
+
+            elif analysis_type == "pca":
+                # 主成分分析の場合
+                if variable_coordinates:
+                    output.write("変数の主成分負荷量\n")
+                    output.write("変数名,第1主成分,第2主成分\n")
+                    for coord in variable_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
+
+                if observation_coordinates:
+                    output.write("観測値の主成分得点\n")
+                    output.write("観測名,第1主成分,第2主成分\n")
+                    for coord in observation_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
+
+            else:
+                # コレスポンデンス分析の場合（デフォルト）
+                if row_coordinates:
+                    output.write("行座標（イメージ）\n")
+                    output.write("項目名,第1次元,第2次元\n")
+                    for coord in row_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
+
+                if col_coordinates:
+                    output.write("列座標（ブランド）\n")
+                    output.write("項目名,第1次元,第2次元\n")
+                    for coord in col_coordinates:
+                        output.write(
+                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
+                        )
+                    output.write("\n")
 
             print(
-                f"Processed {len(row_coordinates)} row coordinates and {len(col_coordinates)} column coordinates"
+                f"Processed coordinates: rows={len(row_coordinates)}, "
+                f"columns={len(col_coordinates)}, "
+                f"variables={len(variable_coordinates)}, "
+                f"observations={len(observation_coordinates)}"
             )
 
         # データが見つからない場合の処理
@@ -712,7 +914,8 @@ async def download_analysis_results_csv(
         csv_content = output.getvalue()
         output.close()
 
-        filename = f"analysis_results_{session_id}.csv"
+        # 分析タイプに応じたファイル名設定
+        filename = f"{analysis_type}_analysis_results_{session_id}.csv"
 
         print(f"Generated analysis CSV: {filename} ({len(csv_content)} characters)")
 

@@ -26,7 +26,7 @@ const analysisRoutes = [
     path: '/factor',
     description: '潜在因子の抽出と分析',
     icon: '⚙️',
-    status: 'development'
+    status: 'available'
   },
   {
     id: 'cluster',

@@ -47,7 +47,7 @@ export default function StatisticsHomePage() {
       id: 'factor',
       name: '因子分析',
       description: '観測変数の背後にある潜在因子を特定し、データの構造を解明します',
-      status: 'development',
+      status: 'available',
       path: '/factor',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
