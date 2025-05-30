@@ -9,7 +9,7 @@ matplotlib.use("Agg")
 from models import create_tables
 
 # ルーターのインポート
-from routers import correspondence, sessions
+from routers import correspondence, sessions, pca
 
 # FastAPIアプリケーションを作成
 app = FastAPI(
@@ -33,6 +33,7 @@ app.add_middleware(
 # ルーターを登録
 app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
+app.include_router(pca.router, prefix="/api")
 # app.include_router(sessions.router)  # prefixなしでも登録（既存コード互換性のため）
 # app.include_router(correspondence_router)  # /correspondence/analyze など
 
@@ -64,6 +65,15 @@ async def get_available_methods():
                 "description": "カテゴリカルデータの関係性を可視化する分析手法",
                 "endpoint": "/api/correspondence/analyze",
                 "status": "available",
+            },
+            {
+                "id": "pca",
+                "name": "主成分分析",
+                "description": "多次元データの次元削減と可視化を行う分析手法",
+                "endpoint": "/api/pca/analyze",
+                "status": "available",
+                "parameters_endpoint": "/api/pca/parameters/validate",
+                "methods_endpoint": "/api/pca/methods",
             },
         ]
     }
