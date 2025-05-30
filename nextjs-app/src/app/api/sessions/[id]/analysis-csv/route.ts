@@ -11,7 +11,7 @@ export async function GET(
     console.log(`Fetching analysis CSV for session: ${sessionId}`);
     
     // Python APIから分析結果CSVを取得
-    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}/analysis-csv`;
+    const pythonApiUrl = `http://python-api:8000/api/sessions/${sessionId}/analysis-csv`;
     console.log(`Fetching analysis CSV from: ${pythonApiUrl}`);
     
     const response = await fetch(pythonApiUrl);

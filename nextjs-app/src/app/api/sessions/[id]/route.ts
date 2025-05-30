@@ -11,7 +11,7 @@ export async function GET(
     console.log(`Fetching session details: ${sessionId}`);
     
     // Python APIからセッション詳細を取得
-    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}`;
+    const pythonApiUrl = `http://python-api:8000/api/sessions/${sessionId}`;
     const response = await fetch(pythonApiUrl);
     
     if (!response.ok) {
@@ -48,7 +48,7 @@ export async function DELETE(
     console.log(`Deleting session: ${sessionId}`);
     
     // Python APIでセッションを削除
-    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}`;
+    const pythonApiUrl = `http://python-api:8000/api/sessions/${sessionId}`;
     const response = await fetch(pythonApiUrl, {
       method: 'DELETE',
     });
@@ -94,7 +94,7 @@ export async function PUT(
     if (body.tags) searchParams.append('tags', body.tags);
     
     // Python APIでセッションを更新
-    const pythonApiUrl = `http://python-api:8000/sessions/${sessionId}?${searchParams.toString()}`;
+    const pythonApiUrl = `http://python-api:8000/api/sessions/${sessionId}?${searchParams.toString()}`;
     const response = await fetch(pythonApiUrl, {
       method: 'PUT',
     });

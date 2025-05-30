@@ -16,7 +16,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     console.log(`Fetching CSV for session: ${sessionId}`);
     
     // 直接セッションのCSVエンドポイントを使用
-    const csvUrl = `${PYTHON_API_URL}/sessions/${sessionId}/csv`;
+    const csvUrl = `${PYTHON_API_URL}/api/sessions/${sessionId}/csv`;
     console.log(`Fetching CSV from: ${csvUrl}`);
     
     const response = await fetch(csvUrl);

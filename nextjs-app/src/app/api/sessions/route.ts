@@ -23,7 +23,7 @@ export async function GET(request: NextRequest) {
     if (tags) params.append('tags', tags);
 
     // Python APIを呼び出し
-    const response = await fetch(`${PYTHON_API_URL}/sessions?${params.toString()}`, {
+    const response = await fetch(`${PYTHON_API_URL}/api/sessions?${params.toString()}`, {
       method: 'GET',
     });
 

@@ -16,7 +16,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     console.log(`Fetching image for session: ${sessionId}`);
     
     // 直接セッションのイメージエンドポイントを使用
-    const imageUrl = `${PYTHON_API_URL}/sessions/${sessionId}/image`;
+    const imageUrl = `${PYTHON_API_URL}/api/sessions/${sessionId}/image`;
     console.log(`Fetching image from: ${imageUrl}`);
     
     const response = await fetch(imageUrl);

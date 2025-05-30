@@ -1,4 +1,4 @@
-// correspondence/analyze/route.ts
+// correspondence/analyze/route.ts - 修正版（エンドポイント統一のみ）
 import { NextRequest, NextResponse } from 'next/server';
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://python-api:8000';
@@ -144,9 +144,8 @@ export async function POST(request: NextRequest): Promise<NextResponse<SuccessRe
       lastModified: (file as any).lastModified ? new Date((file as any).lastModified).toISOString() : 'unknown'
     });
 
-    // Python APIのURLを構築
-    // 既存のPython APIエンドポイントに合わせる
-    const pythonUrl = new URL('/correspondence/analyze', PYTHON_API_URL);
+    // 🔧 修正箇所: エンドポイントを統一パスに変更
+    const pythonUrl = new URL('/api/correspondence/analyze', PYTHON_API_URL);
     searchParams.forEach((value, key) => {
       pythonUrl.searchParams.append(key, value);
     });
