@@ -25,7 +25,11 @@ export default function StatisticsHomePage() {
       path: '/correspondence',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+          <circle cx="8" cy="8" r="2" />
+          <circle cx="16" cy="12" r="2" />
+          <circle cx="12" cy="16" r="2" />
+          <circle cx="6" cy="16" r="2" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h18v18" />
         </svg>
       ),
       features: ['二次元マッピング', '寄与率分析', '相互関連性の可視化', 'CSV出力']
