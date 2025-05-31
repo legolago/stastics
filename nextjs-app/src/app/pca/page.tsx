@@ -9,31 +9,11 @@ import {
   AnalysisSession, 
   PCAAnalysisResult, 
   PCAParams,
-  SessionDetailResponse
+  SessionDetailResponse,
+  ApiErrorResponse,
+  ApiSuccessResponse
 } from '../../types/analysis';
 
-// API レスポンスの型定義
-interface ApiErrorResponse {
-  success: false;
-  error: string;
-  detail?: string;
-  hints?: string[];
-  debug?: {
-    filePreview?: string[];
-    requestInfo?: {
-      url: string;
-      params: Record<string, string>;
-    };
-  };
-}
-
-interface ApiSuccessResponse {
-  success: true;
-  session_id: number;
-  data: any;
-  metadata: any;
-  [key: string]: any;
-}
 
 // レスポンス型の統合
 type PCAApiResponse = ApiSuccessResponse | ApiErrorResponse;
@@ -59,42 +39,58 @@ export default function PCAPage() {
 
   // セッション履歴を取得
   const fetchSessions = async () => {
-    try {
-      setSessionsLoading(true);
-      const params = new URLSearchParams({
-        userId: 'default',
-        limit: '50',
-        offset: '0',
-        analysis_type: 'pca' // PCA分析のみをフィルタ
+  try {
+    setSessionsLoading(true);
+    const params = new URLSearchParams({
+      userId: 'default',
+      limit: '50',
+      offset: '0',
+      analysis_type: 'pca' // 明示的にPCA指定
+    });
+
+    console.log('🔍 PCA sessions request:', `/api/sessions?${params.toString()}`);
+    
+    const response = await fetch(`/api/sessions?${params.toString()}`);
+    const data = await response.json();
+    
+    console.log('📊 API Response:', data);
+
+    if (data.success) {
+      // 強制的な二重フィルタリング
+      const allSessions: AnalysisSession[] = data.data || [];
+        const pcaSessionsOnly = allSessions.filter((session: AnalysisSession) => {
+        const sessionType = session.analysis_type;
+        const isPCA = sessionType === 'pca';
+        
+        if (!isPCA) {
+          console.warn(`⚠️ Non-PCA session found: ${session.session_id} (type: ${sessionType})`);
+        }
+        
+        return isPCA;
       });
-
-      console.log('Fetching PCA sessions...');
       
-      const response = await fetch(`/api/sessions?${params.toString()}`);
+      console.log(`✅ Filtered sessions: ${allSessions.length} → ${pcaSessionsOnly.length} (PCA only)`);
       
-      console.log('Response status:', response.status);
+      // デバッグ: 分析タイプ別カウント
+      const typeCounts: Record<string, number> = {};
+      allSessions.forEach((session: AnalysisSession) => {
+        const type = session.analysis_type || 'undefined';
+        typeCounts[type] = (typeCounts[type] || 0) + 1;
+      });
+      console.log('📈 Session types found:', typeCounts);
       
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const responseText = await response.text();
-      console.log('Response text:', responseText);
-      
-      const data = JSON.parse(responseText);
-      
-      if (data.success) {
-        setSessions(data.data);
-      } else {
-        throw new Error(data.error || 'データ取得に失敗しました');
-      }
-    } catch (error) {
-      console.error('Session fetch error:', error);
-      setError(error instanceof Error ? error.message : 'データ取得中にエラーが発生しました');
-    } finally {
-      setSessionsLoading(false);
+      setSessions(pcaSessionsOnly);
+    } else {
+      console.error('❌ API Error:', data);
+      setError(data.error || 'データ取得に失敗しました');
     }
-  };
+  } catch (error) {
+    console.error('❌ Fetch Error:', error);
+    setError(error instanceof Error ? error.message : 'データ取得中にエラーが発生しました');
+  } finally {
+    setSessionsLoading(false);
+  }
+};
 
   // 特定のセッションの詳細を取得
   const fetchSessionDetail = async (sessionId: number) => {
@@ -374,6 +370,11 @@ export default function PCAPage() {
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
     setError(null);
+    // ファイル名から自動的にセッション名を生成
+    if (!sessionName && selectedFile.name) {
+      const nameWithoutExt = selectedFile.name.replace(/\.[^/.]+$/, '');
+      setSessionName(`${nameWithoutExt}_主成分分析`);
+    }
   };
 
   const handleUpload = async () => {

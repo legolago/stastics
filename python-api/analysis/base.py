@@ -222,6 +222,22 @@ class BaseAnalyzer(ABC):
         try:
             print("=== データベース保存開始 ===")
 
+            # 分析タイプに応じたchi2_valueとdegrees_of_freedomの設定
+            analysis_type = self.get_analysis_type()
+
+            if analysis_type == "pca":
+                # PCAの場合: KMO値をchi2_valueに、主成分数をdegrees_of_freedomに保存
+                chi2_value = results.get("kmo", 0.0)
+                degrees_of_freedom = results.get("n_components", 0)
+            elif analysis_type == "factor":
+                # 因子分析の場合の設定（将来の実装用）
+                chi2_value = results.get("chi2", 0.0)
+                degrees_of_freedom = results.get("n_factors", 0)
+            else:
+                # コレスポンデンス分析の場合（デフォルト）
+                chi2_value = results.get("chi2", 0.0)
+                degrees_of_freedom = results.get("degrees_of_freedom", 0)
+
             # セッション作成
             session = AnalysisSession(
                 session_name=session_name,
@@ -230,19 +246,19 @@ class BaseAnalyzer(ABC):
                 user_id=user_id,
                 original_filename=file.filename,
                 analysis_timestamp=datetime.utcnow(),
-                analysis_type=self.get_analysis_type(),
+                analysis_type=analysis_type,
                 row_count=df.shape[0],
                 column_count=df.shape[1],
                 total_inertia=results.get("total_inertia", 0.0),
-                chi2_value=results.get("chi2", 0.0),
-                degrees_of_freedom=results.get("degrees_of_freedom", 0),
+                chi2_value=chi2_value,
+                degrees_of_freedom=degrees_of_freedom,
             )
 
             db.add(session)
             db.flush()
             session_id = session.id
 
-            print(f"セッション作成完了: ID={session_id}")
+            print(f"セッション作成完了: ID={session_id}, Type={analysis_type}")
 
             # 各種データの保存
             self._save_original_data(db, session_id, csv_text, df)
@@ -278,42 +294,154 @@ class BaseAnalyzer(ABC):
     def _save_coordinates_data(
         self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
     ):
-        """座標データの保存"""
+        """座標データの保存（各分析手法で個別実装可能）"""
         try:
-            row_coords = results.get("row_coordinates")
-            col_coords = results.get("column_coordinates")
+            analysis_type = self.get_analysis_type()
 
-            if row_coords is not None:
-                for i, name in enumerate(df.index):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(name),
-                        point_type="row",
-                        dimension_1=(
-                            float(row_coords[i, 0]) if row_coords.shape[1] > 0 else 0.0
-                        ),
-                        dimension_2=(
-                            float(row_coords[i, 1]) if row_coords.shape[1] > 1 else 0.0
-                        ),
-                    )
-                    db.add(coord_data)
+            if analysis_type == "correspondence":
+                # コレスポンデンス分析の座標保存
+                self._save_correspondence_coordinates(db, session_id, df, results)
+            elif analysis_type == "pca":
+                # PCA分析の座標保存
+                self._save_pca_coordinates(db, session_id, df, results)
+            elif analysis_type == "factor":
+                # 因子分析の座標保存
+                self._save_factor_coordinates(db, session_id, df, results)
+            else:
+                # デフォルト（旧来の方式）
+                self._save_default_coordinates(db, session_id, df, results)
 
-            if col_coords is not None:
-                for i, name in enumerate(df.columns):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(name),
-                        point_type="column",
-                        dimension_1=(
-                            float(col_coords[i, 0]) if col_coords.shape[1] > 0 else 0.0
-                        ),
-                        dimension_2=(
-                            float(col_coords[i, 1]) if col_coords.shape[1] > 1 else 0.0
-                        ),
-                    )
-                    db.add(coord_data)
         except Exception as e:
             print(f"座標データ保存エラー: {e}")
+
+    def _save_correspondence_coordinates(
+        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+    ):
+        """コレスポンデンス分析の座標データ保存"""
+        row_coords = results.get("row_coordinates")
+        col_coords = results.get("column_coordinates")
+
+        if row_coords is not None:
+            for i, name in enumerate(df.index):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="row",
+                    dimension_1=(
+                        float(row_coords[i, 0]) if row_coords.shape[1] > 0 else 0.0
+                    ),
+                    dimension_2=(
+                        float(row_coords[i, 1]) if row_coords.shape[1] > 1 else 0.0
+                    ),
+                )
+                db.add(coord_data)
+
+        if col_coords is not None:
+            for i, name in enumerate(df.columns):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="column",
+                    dimension_1=(
+                        float(col_coords[i, 0]) if col_coords.shape[1] > 0 else 0.0
+                    ),
+                    dimension_2=(
+                        float(col_coords[i, 1]) if col_coords.shape[1] > 1 else 0.0
+                    ),
+                )
+                db.add(coord_data)
+
+    def _save_pca_coordinates(
+        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+    ):
+        """PCA分析の座標データ保存"""
+        component_scores = results.get("component_scores")
+        loadings = results.get("loadings")
+        sample_names = results.get("sample_names", df.index.tolist())
+        feature_names = results.get("feature_names", df.columns.tolist())
+
+        # 主成分得点の保存（観測値として）
+        if component_scores is not None:
+            for i, name in enumerate(sample_names):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="observation",  # PCA用の観測値
+                    dimension_1=(
+                        float(component_scores[i, 0])
+                        if component_scores.shape[1] > 0
+                        else 0.0
+                    ),
+                    dimension_2=(
+                        float(component_scores[i, 1])
+                        if component_scores.shape[1] > 1
+                        else 0.0
+                    ),
+                )
+                db.add(coord_data)
+
+        # 主成分負荷量の保存（変数として）
+        if loadings is not None:
+            for i, name in enumerate(feature_names):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="variable",  # PCA用の変数
+                    dimension_1=(
+                        float(loadings[i, 0]) if loadings.shape[1] > 0 else 0.0
+                    ),
+                    dimension_2=(
+                        float(loadings[i, 1]) if loadings.shape[1] > 1 else 0.0
+                    ),
+                )
+                db.add(coord_data)
+
+    def _save_factor_coordinates(
+        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+    ):
+        """因子分析の座標データ保存（将来の実装用）"""
+        # 因子分析の場合の実装
+        # factor_scores = results.get("factor_scores")
+        # factor_loadings = results.get("factor_loadings")
+        # など...
+        pass
+
+    def _save_default_coordinates(
+        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+    ):
+        """デフォルトの座標データ保存（旧来の方式）"""
+        row_coords = results.get("row_coordinates")
+        col_coords = results.get("column_coordinates")
+
+        if row_coords is not None:
+            for i, name in enumerate(df.index):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="row",
+                    dimension_1=(
+                        float(row_coords[i, 0]) if row_coords.shape[1] > 0 else 0.0
+                    ),
+                    dimension_2=(
+                        float(row_coords[i, 1]) if row_coords.shape[1] > 1 else 0.0
+                    ),
+                )
+                db.add(coord_data)
+
+        if col_coords is not None:
+            for i, name in enumerate(df.columns):
+                coord_data = CoordinatesData(
+                    session_id=session_id,
+                    point_name=str(name),
+                    point_type="column",
+                    dimension_1=(
+                        float(col_coords[i, 0]) if col_coords.shape[1] > 0 else 0.0
+                    ),
+                    dimension_2=(
+                        float(col_coords[i, 1]) if col_coords.shape[1] > 1 else 0.0
+                    ),
+                )
+                db.add(coord_data)
 
     def _save_eigenvalues_data(
         self, db: Session, session_id: int, results: Dict[str, Any]
@@ -321,8 +449,12 @@ class BaseAnalyzer(ABC):
         """固有値データの保存"""
         try:
             eigenvalues = results.get("eigenvalues", [])
-            explained_inertia = results.get("explained_inertia", [])
-            cumulative_inertia = results.get("cumulative_inertia", [])
+            explained_inertia = results.get(
+                "explained_inertia", results.get("explained_variance_ratio", [])
+            )
+            cumulative_inertia = results.get(
+                "cumulative_inertia", results.get("cumulative_variance_ratio", [])
+            )
 
             for i, (eigenval, explained, cumulative) in enumerate(
                 zip(eigenvalues, explained_inertia, cumulative_inertia)
@@ -432,187 +564,3 @@ class BaseAnalyzer(ABC):
     ) -> Dict[str, Any]:
         """レスポンスデータを作成"""
         pass
-
-
-# base.pyに追加する因子分析対応のメソッド
-
-
-def _save_factor_specific_data(
-    self, db: Session, session_id: int, results: Dict[str, Any]
-) -> None:
-    """因子分析特有のデータを保存"""
-    from models import AnalysisMetadata, MetadataTypes
-
-    try:
-        # 因子負荷量メタデータ
-        if "loadings" in results:
-            factor_metadata = {
-                "loadings": results["loadings"],
-                "communalities": results.get("communalities", []),
-                "uniquenesses": results.get("uniquenesses", []),
-                "feature_names": results.get("feature_names", []),
-                "n_factors": results.get("n_factors", 0),
-                "rotation": results.get("rotation", "varimax"),
-                "standardized": results.get("standardized", True),
-                "method": results.get("method", "sklearn"),
-            }
-
-            metadata = AnalysisMetadata(
-                session_id=session_id,
-                metadata_type=getattr(
-                    MetadataTypes, "FACTOR_LOADINGS", "factor_loadings"
-                ),
-                metadata_content=factor_metadata,
-            )
-            db.add(metadata)
-
-        # 前提条件メタデータ
-        if "assumptions" in results:
-            assumptions_metadata = AnalysisMetadata(
-                session_id=session_id,
-                metadata_type="factor_assumptions",
-                metadata_content=results["assumptions"],
-            )
-            db.add(assumptions_metadata)
-
-    except Exception as e:
-        print(f"因子分析特有データ保存エラー: {e}")
-
-
-def _save_coordinates_data_factor(
-    self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
-) -> None:
-    """因子分析の座標データを保存（観測値の因子得点と変数の負荷量）"""
-    from models import CoordinatesData
-
-    try:
-        # 因子得点座標を保存
-        factor_scores = results.get("factor_scores", [])
-        if factor_scores and len(factor_scores) > 0:
-            for i, sample_name in enumerate(df.index):
-                if i < len(factor_scores):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(sample_name),
-                        point_type="observation",
-                        dimension_1=(
-                            float(factor_scores[i][0])
-                            if len(factor_scores[i]) > 0
-                            else 0.0
-                        ),
-                        dimension_2=(
-                            float(factor_scores[i][1])
-                            if len(factor_scores[i]) > 1
-                            else 0.0
-                        ),
-                        dimension_3=(
-                            float(factor_scores[i][2])
-                            if len(factor_scores[i]) > 2
-                            else None
-                        ),
-                        dimension_4=(
-                            float(factor_scores[i][3])
-                            if len(factor_scores[i]) > 3
-                            else None
-                        ),
-                    )
-                    db.add(coord_data)
-
-        # 変数負荷量座標を保存
-        loadings = results.get("loadings", [])
-        if loadings and len(loadings) > 0:
-            for i, feature_name in enumerate(df.columns):
-                if i < len(loadings):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(feature_name),
-                        point_type="variable",
-                        dimension_1=(
-                            float(loadings[i][0]) if len(loadings[i]) > 0 else 0.0
-                        ),
-                        dimension_2=(
-                            float(loadings[i][1]) if len(loadings[i]) > 1 else 0.0
-                        ),
-                        dimension_3=(
-                            float(loadings[i][2]) if len(loadings[i]) > 2 else None
-                        ),
-                        dimension_4=(
-                            float(loadings[i][3]) if len(loadings[i]) > 3 else None
-                        ),
-                    )
-                    db.add(coord_data)
-
-    except Exception as e:
-        print(f"因子分析座標データ保存エラー: {e}")
-
-
-def save_to_database_factor(
-    self,
-    db: Session,
-    session_name: str,
-    description: Optional[str],
-    tags: List[str],
-    user_id: str,
-    file,
-    csv_text: str,
-    df: pd.DataFrame,
-    results: Dict[str, Any],
-    plot_base64: str,
-) -> int:
-    """因子分析用のデータベース保存"""
-    from models import AnalysisSession, AnalysisTypes
-    from datetime import datetime
-
-    try:
-        print("=== 因子分析データベース保存開始 ===")
-
-        # セッション作成
-        session = AnalysisSession(
-            session_name=session_name,
-            description=description or "",
-            tags=tags,
-            user_id=user_id,
-            original_filename=file.filename,
-            analysis_timestamp=datetime.utcnow(),
-            analysis_type=getattr(AnalysisTypes, "FACTOR", "factor"),
-            row_count=df.shape[0],
-            column_count=df.shape[1],
-            total_inertia=(
-                results["cumulative_variance"][-1] / 100.0
-                if results.get("cumulative_variance")
-                else None
-            ),
-            dimensions_count=results.get("n_factors", 2),
-            dimension_1_contribution=(
-                results["explained_variance"][0] / 100.0
-                if results.get("explained_variance")
-                else None
-            ),
-            dimension_2_contribution=(
-                results["explained_variance"][1] / 100.0
-                if len(results.get("explained_variance", [])) > 1
-                else None
-            ),
-        )
-
-        db.add(session)
-        db.flush()
-        session_id = session.id
-
-        print(f"因子分析セッション作成完了: ID={session_id}")
-
-        # 各種データの保存
-        self._save_original_data(db, session_id, csv_text, df)
-        self._save_coordinates_data_factor(db, session_id, df, results)
-        self._save_eigenvalues_data(db, session_id, results)
-        self._save_visualization_data(db, session_id, plot_base64)
-        self._save_factor_specific_data(db, session_id, results)
-
-        db.commit()
-        print(f"因子分析データベース保存完了: session_id={session_id}")
-        return session_id
-
-    except Exception as e:
-        print(f"因子分析データベース保存で致命的エラー: {str(e)}")
-        db.rollback()
-        return 0

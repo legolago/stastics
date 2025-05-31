@@ -5,31 +5,15 @@ import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import AnalysisLayout from '../../components/AnalysisLayout';
 import FileUpload from '../../components/FileUpload';
-import { CorrespondenceAnalysisResult, AnalysisSession, CorrespondenceParams, SessionDetailResponse, CoordinatePoint } from '../../types/analysis';
+import { CorrespondenceAnalysisResult, 
+  AnalysisSession, 
+  CorrespondenceParams, 
+  SessionDetailResponse, 
+  CoordinatePoint,
+  ApiErrorResponse,
+  ApiSuccessResponse
+ } from '../../types/analysis';
 
-// API エラーレスポンスの型定義
-interface ApiErrorResponse {
-  success: false;
-  error: string;
-  detail?: string;
-  hints?: string[];
-  debug?: {
-    filePreview?: string[];
-    requestInfo?: {
-      url: string;
-      params: Record<string, string>;
-    };
-  };
-}
-
-// API 成功レスポンスの型定義
-interface ApiSuccessResponse {
-  success: true;
-  session_id: number;
-  data: any;
-  metadata: any;
-  [key: string]: any;
-}
 
 // レスポンス型の統合
 type ApiResponse = ApiSuccessResponse | ApiErrorResponse;
@@ -53,38 +37,38 @@ export default function CorrespondencePage() {
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // セッション履歴を取得
-  const fetchSessions = async () => {
+  const fetchSessions = async (): Promise<void> => {
     try {
       setSessionsLoading(true);
       const params = new URLSearchParams({
         userId: 'default',
         limit: '50',
         offset: '0',
+        analysis_type: 'correspondence'
       });
 
-      console.log('Fetching sessions...');
+      console.log('🔍 Correspondence sessions request:', `/api/sessions?${params.toString()}`);
       
       const response = await fetch(`/api/sessions?${params.toString()}`);
+      const data = await response.json();
       
-      console.log('Response status:', response.status);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+      console.log('📊 API Response:', data);
 
-      const responseText = await response.text();
-      console.log('Response text:', responseText);
-      
-      const data = JSON.parse(responseText);
-      
       if (data.success) {
-        setSessions(data.data);
+        // フィルタリング処理
+        const allSessions = data.data || [];
+        const correspondenceOnly = allSessions.filter((session: any) => 
+          session.analysis_type === 'correspondence'
+        );
+        
+        console.log(`✅ Filtered: ${allSessions.length} → ${correspondenceOnly.length}`);
+        setSessions(correspondenceOnly);
       } else {
-        throw new Error(data.error || 'データ取得に失敗しました');
+        setError(data.error || 'データ取得に失敗しました');
       }
     } catch (error) {
-      console.error('Session fetch error:', error);
-      setError(error instanceof Error ? error.message : 'データ取得中にエラーが発生しました');
+      console.error('❌ Fetch Error:', error);
+      setError(error instanceof Error ? error.message : 'エラーが発生しました');
     } finally {
       setSessionsLoading(false);
     }
@@ -347,6 +331,11 @@ export default function CorrespondencePage() {
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
     setError(null);
+    // ファイル名から自動的にセッション名を生成
+    if (!sessionName && selectedFile.name) {
+      const nameWithoutExt = selectedFile.name.replace(/\.[^/.]+$/, '');
+      setSessionName(`${nameWithoutExt}_コレスポンデンス分析`);
+    }
   };
 
   const handleUpload = async () => {

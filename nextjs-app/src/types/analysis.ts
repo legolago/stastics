@@ -56,6 +56,13 @@ export interface EigenvalueInfo {
   cumulative_inertia: number;
 }
 
+// 🔧 分析データの基底インターフェース
+export interface BaseAnalysisData {
+  n_components: number;
+  eigenvalues: number[];
+  plot_image: string;
+}
+
 // 分析データ（Python APIからの詳細レスポンス）
 export interface AnalysisData {
   total_inertia?: number;
@@ -119,31 +126,25 @@ export interface SessionDetailResponse {
   data: PythonSessionDetailResponse;
 }
 
-// コレスポンデンス分析の結果データ
-export interface CorrespondenceAnalysisData {
+// 🔧 コレスポンデンス分析の結果データ（BaseAnalysisDataを継承）
+export interface CorrespondenceAnalysisData extends BaseAnalysisData {
   total_inertia: number;
   chi2: number;
   degrees_of_freedom: number;
-  n_components: number;
-  eigenvalues: number[];
   explained_inertia: number[];
   cumulative_inertia: number[];
-  plot_image: string;
   coordinates: CoordinatesData;
 }
 
-// PCA分析の結果データ
-export interface PCAAnalysisData {
-  n_components: number;
+// 🔧 PCA分析の結果データ（BaseAnalysisDataを継承）
+export interface PCAAnalysisData extends BaseAnalysisData {
   n_samples: number;
   n_features: number;
   standardized: boolean;
   explained_variance_ratio: number[];
   cumulative_variance_ratio: number[];
-  eigenvalues: number[];
   kmo: number;
   determinant: number;
-  plot_image: string;
   coordinates: PCACoordinatesData;
 }
 
@@ -180,32 +181,31 @@ export interface AnalysisSessionInfo {
   column_count: number;
 }
 
-// コレスポンデンス分析の結果（統合型）
-export interface CorrespondenceAnalysisResult {
+// 🔧 分析結果の基底インターフェース
+export interface BaseAnalysisResult {
   success: boolean;
   session_id: number;
   session_name?: string;
-  analysis_type: string;
   plot_base64?: string;
+  session_info?: AnalysisSessionInfo;
+}
+
+// 🔧 コレスポンデンス分析の結果（型安全性向上）
+export interface CorrespondenceAnalysisResult extends BaseAnalysisResult {
+  analysis_type: 'correspondence';
   data: CorrespondenceAnalysisData;
   metadata: AnalysisMetadata;
-  session_info?: AnalysisSessionInfo;
 }
 
-// PCA分析の結果（統合型）
-export interface PCAAnalysisResult {
-  success: boolean;
-  session_id: number;
-  session_name?: string;
+// 🔧 PCA分析の結果（型安全性向上）
+export interface PCAAnalysisResult extends BaseAnalysisResult {
   analysis_type: 'pca';
-  plot_base64?: string;
   data: PCAAnalysisData;
   metadata: PCAMetadata;
-  session_info?: AnalysisSessionInfo;
 }
 
-// 汎用的な分析結果型（後方互換性のため）
-export interface AnalysisResult extends CorrespondenceAnalysisResult {}
+// 🔧 汎用的な分析結果型（ユニオン型に修正）
+export type AnalysisResult = CorrespondenceAnalysisResult | PCAAnalysisResult;
 
 // APIエラーレスポンス
 export interface ApiErrorResponse {
@@ -222,6 +222,15 @@ export interface ApiErrorResponse {
   };
 }
 
+// API 成功レスポンスの型定義
+export interface ApiSuccessResponse {
+  success: true;
+  session_id: number;
+  data: any;
+  metadata: any;
+  [key: string]: any;
+}
+
 // APIレスポンスの基本型
 export type ApiResponse<T> = T | ApiErrorResponse;
 
@@ -234,6 +243,32 @@ export interface SessionListResponse {
     limit: number;
     offset: number;
     has_next: boolean;
+  };
+  error?: string;
+  debug?: {
+    requested_analysis_type: string | null;
+    total_found: number;
+    returned_count: number;
+    query_params: Record<string, any>;
+  };
+}
+
+// Sessions API レスポンス型
+export interface SessionsApiResponse {
+  success: boolean;
+  data: AnalysisSession[];
+  error?: string;
+  pagination: {
+    total: number;
+    limit: number;
+    offset: number;
+    has_next: boolean;
+  };
+  debug?: {
+    requested_analysis_type: string | null;
+    total_found: number;
+    returned_count: number;
+    query_params: Record<string, any>;
   };
 }
 
@@ -267,3 +302,147 @@ export interface PCAAnalysisConfig {
   user_id?: string;
   parameters: PCAParams;
 }
+
+// 🔧 型ガード関数（修正版）
+export function isPCASession(session: AnalysisSession): session is AnalysisSession & { analysis_type: 'pca' } {
+  return session.analysis_type === 'pca';
+}
+
+export function isCorrespondenceSession(session: AnalysisSession): session is AnalysisSession & { analysis_type: 'correspondence' } {
+  return session.analysis_type === 'correspondence';
+}
+
+export function isFactorSession(session: AnalysisSession): session is AnalysisSession & { analysis_type: 'factor' } {
+  return session.analysis_type === 'factor';
+}
+
+// 🔧 分析結果の型ガード関数（修正版）
+export function isPCAResult(result: AnalysisResult): result is PCAAnalysisResult {
+  return result.analysis_type === 'pca';
+}
+
+export function isCorrespondenceResult(result: AnalysisResult): result is CorrespondenceAnalysisResult {
+  return result.analysis_type === 'correspondence';
+}
+
+// 型安全なヘルパー型
+export type AnalysisType = 'pca' | 'correspondence' | 'factor';
+
+export type TypeCounts = Record<string, number>;
+
+// PCAセッション特化型
+export interface PCASession extends AnalysisSession {
+  analysis_type: 'pca';
+  chi2_value?: number; // KMO値
+  degrees_of_freedom?: number; // 主成分数
+}
+
+// Correspondenceセッション特化型
+export interface CorrespondenceSession extends AnalysisSession {
+  analysis_type: 'correspondence';
+  chi2_value?: number; // カイ二乗値
+  degrees_of_freedom?: number; // 自由度
+}
+
+// Factor分析セッション特化型
+export interface FactorSession extends AnalysisSession {
+  analysis_type: 'factor';
+  chi2_value?: number; // 適合度統計量
+  degrees_of_freedom?: number; // 因子数
+}
+
+// イベントハンドラー用の型
+export type SessionClickHandler = (sessionId: number) => void;
+export type SessionDeleteHandler = (sessionId: number) => Promise<void>;
+export type FileSelectHandler = (file: File) => void;
+export type UploadHandler = () => Promise<void>;
+
+// フォーム関連の型
+export interface AnalysisFormData {
+  sessionName: string;
+  description: string;
+  tags: string;
+  file: File | null;
+}
+
+export interface PCAFormData extends AnalysisFormData {
+  parameters: PCAParams;
+}
+
+export interface CorrespondenceFormData extends AnalysisFormData {
+  parameters: CorrespondenceParams;
+}
+
+// コンポーネントProps用の型
+export interface AnalysisLayoutProps {
+  title: string;
+  description: string;
+  analysisType: AnalysisType;
+  children: React.ReactNode;
+}
+
+export interface FileUploadProps {
+  onFileSelect: FileSelectHandler;
+  accept: string;
+  disabled?: boolean;
+}
+
+// 状態管理用の型
+export interface AnalysisPageState {
+  sessions: AnalysisSession[];
+  sessionsLoading: boolean;
+  result: AnalysisResult | null;
+  error: string | null;
+  loading: boolean;
+  activeTab: 'upload' | 'history';
+  searchQuery: string;
+}
+
+export interface PCAPageState {
+  sessions: AnalysisSession[];
+  sessionsLoading: boolean;
+  result: PCAAnalysisResult | null;
+  error: string | null;
+  loading: boolean;
+  activeTab: 'upload' | 'history';
+  searchQuery: string;
+  parameters: PCAParams;
+}
+
+export interface CorrespondencePageState {
+  sessions: AnalysisSession[];
+  sessionsLoading: boolean;
+  result: CorrespondenceAnalysisResult | null;
+  error: string | null;
+  loading: boolean;
+  activeTab: 'upload' | 'history';
+  searchQuery: string;
+  parameters: CorrespondenceParams;
+}
+
+// API呼び出し用の型
+export interface FetchSessionsParams {
+  userId?: string;
+  limit?: number;
+  offset?: number;
+  analysis_type?: AnalysisType;
+  search?: string;
+  tags?: string;
+}
+
+export interface AnalysisRequestParams {
+  session_name: string;
+  description?: string;
+  tags?: string;
+  user_id?: string;
+  n_components?: number;
+  standardize?: boolean; // PCA用
+}
+
+// 🔧 型安全なダウンロード関数の型
+export type DownloadHandler = (sessionId: number) => Promise<void>;
+export type AnalysisResultDownloadHandler = (result: AnalysisResult) => Promise<void>;
+
+// 🔧 分析特化型のダウンロードハンドラー
+export type PCADownloadHandler = (result: PCAAnalysisResult) => Promise<void>;
+export type CorrespondenceDownloadHandler = (result: CorrespondenceAnalysisResult) => Promise<void>;

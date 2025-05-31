@@ -84,6 +84,7 @@ interface FactorParams {
 // セッション詳細レスポンスの型定義
 interface SessionDetailResponse {
   success: boolean;
+  session_id?: string | number;  // 追加
   data?: any;
   error?: string;
 }
@@ -177,89 +178,100 @@ export default function FactorAnalysisPage() {
   };
 
   // 特定のセッションの詳細を取得
-  const fetchSessionDetail = async (sessionId: number) => {
-    try {
-      console.log('Fetching session details for:', sessionId);
-      
-      const response = await fetch(`/api/sessions/${sessionId}`);
-      
-      if (!response.ok) {
-        console.error(`HTTP ${response.status}: ${response.statusText}`);
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-        alert('セッション詳細の取得に失敗しました');
-        return;
-      }
-
-      const data: SessionDetailResponse = await response.json();
-      console.log('Received session data:', data);
-
-      if (data.success && data.data) {
-        const pythonResponse = data.data;
-        
-        // 因子分析結果の型安全な変換処理
-        const analysisResult: FactorAnalysisResult = {
-          success: true,
-          session_id: pythonResponse.session_info?.session_id || sessionId,
-          session_name: pythonResponse.session_info?.session_name || '',
-          analysis_type: 'factor',
-          plot_base64: pythonResponse.visualization?.plot_image || pythonResponse.plot_base64 || "", 
-          data: {
-            n_factors: pythonResponse.analysis_data?.n_factors || pythonResponse.data?.n_factors || 0,
-            rotation: pythonResponse.analysis_data?.rotation || pythonResponse.data?.rotation || 'varimax',
-            standardized: pythonResponse.analysis_data?.standardized || pythonResponse.data?.standardized || true,
-            loadings: pythonResponse.analysis_data?.loadings || pythonResponse.data?.loadings || [],
-            communalities: pythonResponse.analysis_data?.communalities || pythonResponse.data?.communalities || [],
-            uniquenesses: pythonResponse.analysis_data?.uniquenesses || pythonResponse.data?.uniquenesses || [],
-            eigenvalues: pythonResponse.analysis_data?.eigenvalues || pythonResponse.data?.eigenvalues || [],
-            explained_variance: pythonResponse.analysis_data?.explained_variance || pythonResponse.data?.explained_variance || [],
-            cumulative_variance: pythonResponse.analysis_data?.cumulative_variance || pythonResponse.data?.cumulative_variance || [],
-            factor_scores: pythonResponse.analysis_data?.factor_scores || pythonResponse.data?.factor_scores || [],
-            feature_names: pythonResponse.analysis_data?.feature_names || pythonResponse.data?.feature_names || [],
-            sample_names: pythonResponse.analysis_data?.sample_names || pythonResponse.data?.sample_names || [],
-            assumptions: pythonResponse.analysis_data?.assumptions || pythonResponse.data?.assumptions || {
-              kmo_model: 0,
-              kmo_interpretation: 'unknown',
-              bartlett_p_value: 1,
-              bartlett_significant: false,
-              n_samples: 0,
-              n_features: 0
-            },
-            method: pythonResponse.analysis_data?.method || pythonResponse.data?.method || 'unknown'
-          },
-          metadata: {
-            session_name: pythonResponse.session_info?.session_name || '',
-            filename: pythonResponse.session_info?.filename || '',
-            rows: pythonResponse.metadata?.row_count || 0,
-            columns: pythonResponse.metadata?.column_count || 0,
-            feature_names: pythonResponse.analysis_data?.feature_names || pythonResponse.data?.feature_names || [],
-            sample_names: pythonResponse.analysis_data?.sample_names || pythonResponse.data?.sample_names || []
-          },
-          session_info: {
-            session_id: pythonResponse.session_info?.session_id || sessionId,
-            session_name: pythonResponse.session_info?.session_name || '',
-            description: pythonResponse.session_info?.description || '',
-            tags: pythonResponse.session_info?.tags || [],
-            analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-            filename: pythonResponse.session_info?.filename || '',
-            analysis_type: 'factor',
-            row_count: pythonResponse.metadata?.row_count || 0,
-            column_count: pythonResponse.metadata?.column_count || 0
-          }
-        };
-
-        setResult(analysisResult);
-        console.log('Factor analysis session details loaded successfully');
-        
-      } else {
-        console.error('Invalid response format:', data);
-        alert('セッションデータの形式が不正です');
-      }
-    } catch (err) {
-      console.error('セッション詳細取得エラー:', err);
-      alert('セッション詳細の取得中にエラーが発生しました');
+  // 特定のセッションの詳細を取得
+const fetchSessionDetail = async (sessionId: number) => {
+  try {
+    console.log('Fetching session details for:', sessionId);
+    
+    const response = await fetch(`/api/sessions/${sessionId}`);
+    
+    if (!response.ok) {
+      console.error(`HTTP ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('Error response:', errorText);
+      alert('セッション詳細の取得に失敗しました');
+      return;
     }
-  };
+
+    const data: SessionDetailResponse = await response.json();
+    console.log('Received session data:', data);
+
+    if (data.success && data.data) {
+      const pythonResponse = data.data;
+      
+      // session_idの安全な取得
+      const sessionIdFromResponse = data.session_id || 
+                                   pythonResponse.session_info?.session_id || 
+                                   sessionId;
+
+      // 画像データの取得
+      const plotImageFromSession = pythonResponse.visualization?.plot_image || 
+                                   pythonResponse.plot_base64 || 
+                                   "";
+      
+      // 因子分析結果の型安全な変換処理
+      const analysisResult: FactorAnalysisResult = {
+        success: true,
+        session_id: sessionIdFromResponse,
+        session_name: pythonResponse.session_info?.session_name || '',
+        analysis_type: 'factor',
+        plot_base64: plotImageFromSession, // 修正：正しい変数名を使用
+        data: {
+          n_factors: pythonResponse.analysis_data?.n_factors || pythonResponse.data?.n_factors || 0,
+          rotation: pythonResponse.analysis_data?.rotation || pythonResponse.data?.rotation || 'varimax',
+          standardized: pythonResponse.analysis_data?.standardized || pythonResponse.data?.standardized || true,
+          loadings: pythonResponse.analysis_data?.loadings || pythonResponse.data?.loadings || [],
+          communalities: pythonResponse.analysis_data?.communalities || pythonResponse.data?.communalities || [],
+          uniquenesses: pythonResponse.analysis_data?.uniquenesses || pythonResponse.data?.uniquenesses || [],
+          eigenvalues: pythonResponse.analysis_data?.eigenvalues || pythonResponse.data?.eigenvalues || [],
+          explained_variance: pythonResponse.analysis_data?.explained_variance || pythonResponse.data?.explained_variance || [],
+          cumulative_variance: pythonResponse.analysis_data?.cumulative_variance || pythonResponse.data?.cumulative_variance || [],
+          factor_scores: pythonResponse.analysis_data?.factor_scores || pythonResponse.data?.factor_scores || [],
+          feature_names: pythonResponse.analysis_data?.feature_names || pythonResponse.data?.feature_names || [],
+          sample_names: pythonResponse.analysis_data?.sample_names || pythonResponse.data?.sample_names || [],
+          assumptions: pythonResponse.analysis_data?.assumptions || pythonResponse.data?.assumptions || {
+            kmo_model: 0,
+            kmo_interpretation: 'unknown',
+            bartlett_p_value: 1,
+            bartlett_significant: false,
+            n_samples: 0,
+            n_features: 0
+          },
+          method: pythonResponse.analysis_data?.method || pythonResponse.data?.method || 'unknown'
+        },
+        metadata: {
+          session_name: pythonResponse.session_info?.session_name || '',
+          filename: pythonResponse.session_info?.filename || '',
+          rows: pythonResponse.metadata?.row_count || 0,
+          columns: pythonResponse.metadata?.column_count || 0,
+          feature_names: pythonResponse.analysis_data?.feature_names || pythonResponse.data?.feature_names || [],
+          sample_names: pythonResponse.analysis_data?.sample_names || pythonResponse.data?.sample_names || []
+        },
+        session_info: {
+          session_id: sessionIdFromResponse,
+          session_name: pythonResponse.session_info?.session_name || '',
+          description: pythonResponse.session_info?.description || '',
+          tags: pythonResponse.session_info?.tags || [],
+          analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
+          filename: pythonResponse.session_info?.filename || '',
+          analysis_type: 'factor',
+          row_count: pythonResponse.metadata?.row_count || 0,
+          column_count: pythonResponse.metadata?.column_count || 0
+        }
+      };
+
+      setResult(analysisResult);
+      console.log('Factor analysis session details loaded successfully');
+      
+    } else {
+      console.error('Invalid response format:', data);
+      alert('セッションデータの形式が不正です');
+    }
+  } catch (err) {
+    console.error('セッション詳細取得エラー:', err);
+    alert('セッション詳細の取得中にエラーが発生しました');
+  }
+};
 
   // セッションを削除
   const deleteSession = async (sessionId: number) => {
@@ -463,117 +475,268 @@ export default function FactorAnalysisPage() {
   };
 
   const handleUpload = async () => {
-    if (!file) {
-      setError('ファイルを選択してください');
-      return;
+  if (!file) {
+    setError('ファイルを選択してください');
+    return;
+  }
+
+  if (!sessionName.trim()) {
+    setError('セッション名を入力してください');
+    return;
+  }
+
+  setLoading(true);
+  setError(null);
+  setResult(null);
+
+  try {
+    // CSVファイルの基本検証
+    const fileContent = await file.text();
+    const lines = fileContent.split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+    
+    if (lines.length < 3) {
+      throw new Error('データが不足しています。ヘッダー行と最低2行のデータが必要です。');
     }
 
-    if (!sessionName.trim()) {
-      setError('セッション名を入力してください');
-      return;
+    // ヘッダーとデータの検証
+    const headers = lines[0].split(',').map(h => h.trim());
+    if (headers.length < 3) {
+      throw new Error('列が不足しています。ラベル列と最低2列のデータが必要です。');
     }
 
-    setLoading(true);
-    setError(null);
-    setResult(null);
+    console.log('ファイル検証完了:', {
+      fileName: file.name,
+      rows: lines.length - 1,
+      columns: headers.length - 1,
+      headers: headers.slice(0, 3)
+    });
 
+    // FormDataの準備
+    const formData = new FormData();
+    formData.append('file', file);
+
+    // クエリパラメータの設定
+    const params = new URLSearchParams({
+      session_name: sessionName.trim(),
+      description: description.trim(),
+      tags: tags.trim(),
+      user_id: 'default',
+      rotation: parameters.rotation,
+      standardize: parameters.standardize.toString()
+    });
+
+    // 因子数が指定されている場合のみ追加
+    if (parameters.n_factors !== undefined && parameters.n_factors > 0) {
+      params.append('n_factors', parameters.n_factors.toString());
+    }
+
+    console.log('因子分析を開始します...', params.toString());
+    const response = await fetch(`/api/factor/analyze?${params.toString()}`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const responseText = await response.text();
+    console.log('API Response:', response.status, responseText);
+
+    let data: ApiResponse;
     try {
-      // CSVファイルの基本検証
-      const fileContent = await file.text();
-      const lines = fileContent.split('\n')
-        .map(line => line.trim())
-        .filter(Boolean);
+      data = JSON.parse(responseText) as ApiResponse;
+    } catch (parseError) {
+      console.error('Response parsing error:', parseError);
+      throw new Error('サーバーからの応答を解析できませんでした');
+    }
+
+    if (!response.ok) {
+      console.error('API Error:', data);
       
-      if (lines.length < 3) {
-        throw new Error('データが不足しています。ヘッダー行と最低2行のデータが必要です。');
-      }
-
-      // ヘッダーとデータの検証
-      const headers = lines[0].split(',').map(h => h.trim());
-      if (headers.length < 3) {
-        throw new Error('列が不足しています。ラベル列と最低2列のデータが必要です。');
-      }
-
-      console.log('ファイル検証完了:', {
-        fileName: file.name,
-        rows: lines.length - 1,
-        columns: headers.length - 1,
-        headers: headers.slice(0, 3)
-      });
-
-      // FormDataの準備
-      const formData = new FormData();
-      formData.append('file', file);
-
-      // クエリパラメータの設定
-      const params = new URLSearchParams({
-        session_name: sessionName.trim(),
-        description: description.trim(),
-        tags: tags.trim(),
-        user_id: 'default',
-        rotation: parameters.rotation,
-        standardize: parameters.standardize.toString()
-      });
-
-      // 因子数が指定されている場合のみ追加
-      if (parameters.n_factors !== undefined && parameters.n_factors > 0) {
-        params.append('n_factors', parameters.n_factors.toString());
-      }
-
-      console.log('因子分析を開始します...', params.toString());
-      const response = await fetch(`/api/factor/analyze?${params.toString()}`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      const responseText = await response.text();
-      console.log('API Response:', response.status, responseText);
-
-      let data: ApiResponse;
-      try {
-        data = JSON.parse(responseText) as ApiResponse;
-      } catch (parseError) {
-        console.error('Response parsing error:', parseError);
-        throw new Error('サーバーからの応答を解析できませんでした');
-      }
-
-      if (!response.ok) {
-        console.error('API Error:', data);
+      if ('error' in data) {
+        const errorData = data as ApiErrorResponse;
+        let errorMessage = errorData.error || errorData.detail || 'データの分析中にエラーが発生しました';
         
-        if ('error' in data) {
-          const errorData = data as ApiErrorResponse;
-          let errorMessage = errorData.error || errorData.detail || 'データの分析中にエラーが発生しました';
-          
-          if (errorData.hints && Array.isArray(errorData.hints)) {
-            errorMessage += '\n\n推奨事項:\n' + errorData.hints.map((hint: string) => `• ${hint}`).join('\n');
-          }
-          
-          if (errorData.debug?.filePreview && Array.isArray(errorData.debug.filePreview)) {
-            console.log('ファイルプレビュー:', errorData.debug.filePreview);
-            errorMessage += '\n\nファイルの最初の数行:\n' + errorData.debug.filePreview.join('\n');
-          }
-          
-          throw new Error(errorMessage);
+        if (errorData.hints && Array.isArray(errorData.hints)) {
+          errorMessage += '\n\n推奨事項:\n' + errorData.hints.map((hint: string) => `• ${hint}`).join('\n');
         }
+        
+        if (errorData.debug?.filePreview && Array.isArray(errorData.debug.filePreview)) {
+          console.log('ファイルプレビュー:', errorData.debug.filePreview);
+          errorMessage += '\n\nファイルの最初の数行:\n' + errorData.debug.filePreview.join('\n');
+        }
+        
+        throw new Error(errorMessage);
       }
+    }
 
-      if (!data.success) {
-        throw new Error('error' in data ? data.error : 'データの分析に失敗しました');
-      }
+    if (!data.success) {
+      throw new Error('error' in data ? data.error : 'データの分析に失敗しました');
+    }
 
-      console.log('因子分析が完了しました:', data);
+    // レスポンス構造の詳細ログ
+    console.log('=== レスポンス構造の詳細分析 ===');
+    console.log('data keys:', Object.keys(data));
+    if ('data' in data) {
+      console.log('data.data keys:', Object.keys((data as any).data || {}));
+      console.log('data.data.plot_image exists:', 'plot_image' in ((data as any).data || {}));
+      console.log('data.data.plot_image length:', ((data as any).data?.plot_image || '').length);
+    }
+    console.log('data.plot_base64 exists:', 'plot_base64' in data);
+    console.log('data.visualization exists:', 'visualization' in data);
+    
+    const successData = data as ApiSuccessResponse;
+    
+    // バックエンドから直接画像データを取得
+    const plotImage = successData.data?.plot_image || "";
+    
+    console.log('画像データの取得状況:');
+    console.log('- successData.data?.plot_image:', plotImage ? `${plotImage.length} chars` : 'undefined');
+    console.log('- plotImageの最初の50文字:', plotImage.substring(0, 50));
+    
+    // 画像データが取得できた場合は直接結果を作成
+    if (plotImage) {
+      console.log('バックエンドから直接画像データを取得しました');
+      
+      const analysisResult: FactorAnalysisResult = {
+        success: true,
+        session_id: successData.session_id,
+        session_name: sessionName,
+        analysis_type: 'factor',
+        plot_base64: plotImage, // バックエンドから取得した画像データ
+        data: {
+          n_factors: successData.data?.n_factors || 0,
+          rotation: successData.data?.rotation || parameters.rotation,
+          standardized: successData.data?.standardized || parameters.standardize,
+          loadings: successData.data?.loadings || [],
+          communalities: successData.data?.communalities || [],
+          uniquenesses: successData.data?.uniquenesses || [],
+          eigenvalues: successData.data?.eigenvalues || [],
+          explained_variance: successData.data?.explained_variance || [],
+          cumulative_variance: successData.data?.cumulative_variance || [],
+          factor_scores: successData.data?.factor_scores || [],
+          feature_names: successData.data?.feature_names || [],
+          sample_names: successData.data?.sample_names || [],
+          assumptions: successData.data?.assumptions || {
+            kmo_model: 0,
+            kmo_interpretation: 'unknown',
+            bartlett_p_value: 1,
+            bartlett_significant: false,
+            n_samples: 0,
+            n_features: 0
+          },
+          method: successData.data?.method || 'unknown'
+        },
+        metadata: {
+          session_name: sessionName,
+          filename: file.name,
+          rows: successData.metadata?.rows || 0,
+          columns: successData.metadata?.columns || 0,
+          feature_names: successData.data?.feature_names || [],
+          sample_names: successData.data?.sample_names || []
+        },
+        session_info: {
+          session_id: successData.session_id,
+          session_name: sessionName,
+          description: description,
+          tags: tags.split(',').map(tag => tag.trim()).filter(Boolean),
+          analysis_timestamp: new Date().toISOString(),
+          filename: file.name,
+          analysis_type: 'factor',
+          row_count: successData.metadata?.rows || 0,
+          column_count: successData.metadata?.columns || 0
+        }
+      };
 
-      // 結果の設定と履歴の更新
-      setResult(data as FactorAnalysisResult);
+      setResult(analysisResult);
       fetchSessions();
       
-    } catch (err) {
-      console.error('Analysis error:', err);
-      setError(err instanceof Error ? err.message : '不明なエラーが発生しました');
-    } finally {
-      setLoading(false);
+      console.log('新規分析完了: 画像データ付きで結果を設定しました');
+      
+    } else {
+      // 画像データが取得できない場合はセッション詳細から取得を試行
+      console.log('画像データが取得できないため、セッション詳細から取得を試行します');
+      
+      if (successData.session_id) {
+        try {
+          // セッション詳細を取得（画像データ含む）
+          await fetchSessionDetail(Number(successData.session_id));
+          
+          // 履歴も更新
+          fetchSessions();
+          
+          console.log('新規分析完了: セッション詳細から画像を取得しました');
+          
+        } catch (detailError) {
+          console.error('セッション詳細取得エラー:', detailError);
+          
+          // セッション詳細の取得に失敗した場合は、画像なしで結果を表示
+          const analysisResult: FactorAnalysisResult = {
+            success: true,
+            session_id: successData.session_id,
+            session_name: sessionName,
+            analysis_type: 'factor',
+            plot_base64: "", // 画像なし
+            data: {
+              n_factors: successData.data?.n_factors || 0,
+              rotation: successData.data?.rotation || parameters.rotation,
+              standardized: successData.data?.standardized || parameters.standardize,
+              loadings: successData.data?.loadings || [],
+              communalities: successData.data?.communalities || [],
+              uniquenesses: successData.data?.uniquenesses || [],
+              eigenvalues: successData.data?.eigenvalues || [],
+              explained_variance: successData.data?.explained_variance || [],
+              cumulative_variance: successData.data?.cumulative_variance || [],
+              factor_scores: successData.data?.factor_scores || [],
+              feature_names: successData.data?.feature_names || [],
+              sample_names: successData.data?.sample_names || [],
+              assumptions: successData.data?.assumptions || {
+                kmo_model: 0,
+                kmo_interpretation: 'unknown',
+                bartlett_p_value: 1,
+                bartlett_significant: false,
+                n_samples: 0,
+                n_features: 0
+              },
+              method: successData.data?.method || 'unknown'
+            },
+            metadata: {
+              session_name: sessionName,
+              filename: file.name,
+              rows: successData.metadata?.rows || 0,
+              columns: successData.metadata?.columns || 0,
+              feature_names: successData.data?.feature_names || [],
+              sample_names: successData.data?.sample_names || []
+            },
+            session_info: {
+              session_id: successData.session_id,
+              session_name: sessionName,
+              description: description,
+              tags: tags.split(',').map(tag => tag.trim()).filter(Boolean),
+              analysis_timestamp: new Date().toISOString(),
+              filename: file.name,
+              analysis_type: 'factor',
+              row_count: successData.metadata?.rows || 0,
+              column_count: successData.metadata?.columns || 0
+            }
+          };
+
+          setResult(analysisResult);
+          fetchSessions();
+          
+          console.warn('画像なしで結果を表示しました');
+        }
+      } else {
+        throw new Error('セッションIDが取得できませんでした');
+      }
     }
-  };
+    
+  } catch (err) {
+    console.error('Analysis error:', err);
+    setError(err instanceof Error ? err.message : '不明なエラーが発生しました');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleString('ja-JP');

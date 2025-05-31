@@ -1,8 +1,12 @@
 from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # GUI無効化
+
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
+
 import seaborn as sns
 from sklearn.decomposition import FactorAnalysis
 from sklearn.preprocessing import StandardScaler
