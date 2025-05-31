@@ -62,7 +62,7 @@ export default function AnalysisLayout({ children, title, description, analysisT
               
               <Link href="/" className="flex items-center ml-4 lg:ml-0">
                 <div className="text-2xl font-bold text-indigo-600">📈</div>
-                <h1 className="ml-3 text-xl font-bold text-gray-900">多変量解析アプリ</h1>
+                <h1 className="ml-3 text-xl font-bold text-gray-900">多変量解析アプリTOP</h1>
               </Link>
             </div>
             
