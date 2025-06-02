@@ -1,4 +1,4 @@
-# python-api/main.py の修正版（PCAファイルの場所に応じて調整）
+# python-api/main.py の修正版
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +33,7 @@ except ImportError:
 app = FastAPI(
     title="多変量解析API",
     version="2.0.0",
-    description="コレスポンデンス分析、主成分分析、因子分析などの多変量解析を提供するAPI",
+    description="コレスポンデンス分析、主成分分析、因子分析、クラスター分析などの多変量解析を提供するAPI",
 )
 
 # データベーステーブルを作成
@@ -53,7 +53,17 @@ app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(pca.router, prefix="/api")
 app.include_router(factor.router, prefix="/api")  # 因子分析ルーターを追加
-app.include_router(cluster.router, prefix="/api")  # クラスター解析ルーターを追加
+
+# クラスター解析ルーターを登録（prefixなしで直接登録）
+app.include_router(cluster.router)  # cluster.routerは内部で "/cluster" パスを持っている
+print("✓ Cluster analysis router registered")
+
+# デバッグ用：登録されているルートを確認
+print("=== 登録されているルート一覧 ===")
+for route in app.routes:
+    if hasattr(route, "path") and hasattr(route, "methods"):
+        print(f"Path: {route.path}, Methods: {route.methods}")
+print("===========================")
 
 # PCAルーターを条件付きで登録
 # if pca_available:
@@ -73,7 +83,7 @@ async def root():
             "correspondence",
             "pca" if pca_available else None,
             "factor",
-            "cluster",
+            "cluster",  # クラスター分析を追加
         ],
     }
 
@@ -121,12 +131,10 @@ async def get_available_methods():
             "id": "cluster",
             "name": "クラスター解析",
             "description": "データを類似性に基づいてグループに分ける分析手法",
-            "endpoint": "/api/cluster/analyze",
+            "endpoint": "/cluster/analyze",  # 修正: prefixなしのパス
             "status": "available",
-            "parameters_endpoint": "/api/cluster/parameters/validate",
-            "methods_endpoint": "/api/cluster/methods",
-            "optimal_clusters_endpoint": "/api/cluster/optimal-clusters",
-            "evaluation_metrics_endpoint": "/api/cluster/evaluation-metrics",
+            "methods_endpoint": "/cluster/methods",  # 修正: prefixなしのパス
+            "optimal_clusters_endpoint": "/cluster/optimal-clusters",  # 修正: prefixなしのパス
         },
     ]
 
@@ -178,21 +186,45 @@ async def get_analysis_types():
                         "name": "kmeans",
                         "display_name": "K-means法",
                         "description": "事前にクラスター数を指定する代表的な手法",
+                        "parameters": ["n_clusters", "standardize"],
                     },
                     {
                         "name": "hierarchical",
                         "display_name": "階層クラスタリング",
                         "description": "階層的にクラスターを形成し、デンドログラムで可視化",
+                        "parameters": ["n_clusters", "linkage", "standardize"],
                     },
                     {
                         "name": "dbscan",
                         "display_name": "DBSCAN法",
                         "description": "密度ベースの手法で、クラスター数を事前に指定不要",
+                        "parameters": ["eps", "min_samples", "standardize"],
                     },
                 ],
             },
         ]
     }
+
+
+# クラスター分析専用のヘルスチェックエンドポイント
+@app.get("/cluster/health")
+async def cluster_health_check():
+    """クラスター分析機能のヘルスチェック"""
+    try:
+        from analysis.cluster import ClusterAnalyzer
+
+        analyzer = ClusterAnalyzer()
+        return {
+            "status": "healthy",
+            "analysis_type": analyzer.get_analysis_type(),
+            "available_methods": ["kmeans", "hierarchical", "dbscan"],
+            "message": "クラスター分析機能は正常に動作しています",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"クラスター分析機能でエラーが発生しました: {str(e)}",
+        }
 
 
 if __name__ == "__main__":

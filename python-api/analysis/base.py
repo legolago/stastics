@@ -597,10 +597,14 @@ def _save_coordinates_data(
         print(f"座標データ保存エラー: {e}")
 
 
+# python-api/analysis/base.py への追加メソッド
+# 既存のBaseAnalyzerクラスに以下のメソッドを追加
+
+
 def _save_cluster_coordinates(
     self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
 ):
-    """クラスター解析の座標データ保存"""
+    """クラスター解析の座標データ保存 - 修正版"""
     try:
         from models import CoordinatesData
 
@@ -608,26 +612,47 @@ def _save_cluster_coordinates(
         labels = results.get("labels")
         sample_names = results.get("sample_names", df.index.tolist())
 
+        print(
+            f"座標データ保存開始: pca_coordinates={pca_coordinates is not None}, labels={labels is not None}"
+        )
+        print(f"sample_names数: {len(sample_names) if sample_names else 0}")
+
         if pca_coordinates is not None and labels is not None:
+            print(
+                f"PCA座標形状: {np.array(pca_coordinates).shape if pca_coordinates is not None else 'None'}"
+            )
+            print(f"ラベル数: {len(labels) if labels else 0}")
+
+            pca_array = np.array(pca_coordinates)
+            labels_array = np.array(labels)
+
             for i, name in enumerate(sample_names):
-                # クラスターラベルを含む観測値として保存
-                cluster_label = labels[i] if labels[i] != -1 else "ノイズ"
-                coord_data = CoordinatesData(
-                    session_id=session_id,
-                    point_name=f"{name}",
-                    point_type="observation",
-                    dimension_1=(
-                        float(pca_coordinates[i, 0])
-                        if pca_coordinates.shape[1] > 0
-                        else 0.0
-                    ),
-                    dimension_2=(
-                        float(pca_coordinates[i, 1])
-                        if pca_coordinates.shape[1] > 1
-                        else 0.0
-                    ),
-                )
-                db.add(coord_data)
+                if i < len(pca_array) and i < len(labels_array):
+                    # クラスターラベルを含む観測値として保存
+                    cluster_label = (
+                        int(labels_array[i]) + 1 if labels_array[i] != -1 else -1
+                    )
+
+                    coord_data = CoordinatesData(
+                        session_id=session_id,
+                        point_name=str(name),
+                        point_type="observation",
+                        dimension_1=(
+                            float(pca_array[i, 0]) if pca_array.shape[1] > 0 else 0.0
+                        ),
+                        dimension_2=(
+                            float(pca_array[i, 1]) if pca_array.shape[1] > 1 else 0.0
+                        ),
+                    )
+                    db.add(coord_data)
+
+                    if i < 3:  # 最初の3つをログ出力
+                        print(
+                            f"座標データ{i+1}: name={name}, cluster={cluster_label}, "
+                            f"dim1={coord_data.dimension_1:.3f}, dim2={coord_data.dimension_2:.3f}"
+                        )
+
+            print(f"座標データ保存完了: {len(sample_names)}件")
 
         # クラスター中心点の保存（K-meansの場合）
         if (
@@ -635,102 +660,43 @@ def _save_cluster_coordinates(
             and results.get("cluster_centers") is not None
         ):
             cluster_centers = results.get("cluster_centers")
-            for i, center in enumerate(cluster_centers):
-                coord_data = CoordinatesData(
-                    session_id=session_id,
-                    point_name=f"クラスター{i+1}中心",
-                    point_type="center",
-                    dimension_1=float(center[0]) if len(center) > 0 else 0.0,
-                    dimension_2=float(center[1]) if len(center) > 1 else 0.0,
-                )
-                db.add(coord_data)
+            print(f"クラスター中心点保存: {len(cluster_centers)}個")
+
+            # PCA変換された中心点を計算
+            if pca_coordinates is not None and cluster_centers is not None:
+                try:
+                    from sklearn.decomposition import PCA
+
+                    # 元のデータでPCAを学習
+                    pca = PCA(n_components=2)
+                    pca.fit(df.select_dtypes(include=[np.number]))
+
+                    # 中心点をPCA空間に変換
+                    centers_2d = pca.transform(np.array(cluster_centers))
+
+                    for i, center_2d in enumerate(centers_2d):
+                        coord_data = CoordinatesData(
+                            session_id=session_id,
+                            point_name=f"クラスター{i+1}中心",
+                            point_type="center",
+                            dimension_1=float(center_2d[0]),
+                            dimension_2=float(center_2d[1]),
+                        )
+                        db.add(coord_data)
+                        print(
+                            f"中心点{i+1}: dim1={center_2d[0]:.3f}, dim2={center_2d[1]:.3f}"
+                        )
+
+                    print(f"クラスター中心点保存完了: {len(centers_2d)}件")
+
+                except Exception as center_error:
+                    print(f"クラスター中心点PCA変換エラー: {center_error}")
 
     except Exception as e:
         print(f"クラスター座標データ保存エラー: {e}")
+        import traceback
 
-
-def save_to_database(
-    self,
-    db: Session,
-    session_name: str,
-    description: Optional[str],
-    tags: List[str],
-    user_id: str,
-    file,
-    csv_text: str,
-    df: pd.DataFrame,
-    results: Dict[str, Any],
-    plot_base64: str,
-) -> int:
-    """データベースに保存（共通処理）- クラスター解析対応版"""
-    try:
-        print("=== データベース保存開始 ===")
-
-        # 分析タイプに応じたchi2_valueとdegrees_of_freedomの設定
-        analysis_type = self.get_analysis_type()
-
-        if analysis_type == "pca":
-            # PCAの場合: KMO値をchi2_valueに、主成分数をdegrees_of_freedomに保存
-            chi2_value = results.get("kmo", 0.0)
-            degrees_of_freedom = results.get("n_components", 0)
-        elif analysis_type == "factor":
-            # 因子分析の場合の設定
-            chi2_value = results.get("chi2", 0.0)
-            degrees_of_freedom = results.get("n_factors", 0)
-        elif analysis_type == "cluster":
-            # クラスター解析の場合の設定
-            evaluation_metrics = results.get("evaluation_metrics", {})
-            chi2_value = evaluation_metrics.get(
-                "silhouette_score", 0.0
-            )  # シルエット係数をchi2_valueに保存
-            degrees_of_freedom = results.get(
-                "n_clusters", 0
-            )  # クラスター数をdegrees_of_freedomに保存
-        else:
-            # コレスポンデンス分析の場合（デフォルト）
-            chi2_value = results.get("chi2", 0.0)
-            degrees_of_freedom = results.get("degrees_of_freedom", 0)
-
-        # セッション作成
-        session = AnalysisSession(
-            session_name=session_name,
-            description=description or "",
-            tags=tags,
-            user_id=user_id,
-            original_filename=file.filename,
-            analysis_timestamp=datetime.utcnow(),
-            analysis_type=analysis_type,
-            row_count=df.shape[0],
-            column_count=df.shape[1],
-            total_inertia=results.get("total_inertia", 0.0),
-            chi2_value=chi2_value,
-            degrees_of_freedom=degrees_of_freedom,
-        )
-
-        db.add(session)
-        db.flush()
-        session_id = session.id
-
-        print(f"セッション作成完了: ID={session_id}, Type={analysis_type}")
-
-        # 各種データの保存
-        self._save_original_data(db, session_id, csv_text, df)
-        self._save_coordinates_data(db, session_id, df, results)
-        self._save_eigenvalues_data(db, session_id, results)
-        self._save_visualization_data(db, session_id, plot_base64)
-
-        # クラスター解析特有のメタデータ保存
-        if analysis_type == "cluster":
-            self._save_cluster_metadata(db, session_id, results)
-
-        db.commit()
-        print(f"データベース保存完了: session_id={session_id}")
-        return session_id
-
-    except Exception as e:
-        print(f"データベース保存で致命的エラー: {str(e)}")
-        db.rollback()
-        return 0
+        print(f"詳細:\n{traceback.format_exc()}")
 
 
 def _save_cluster_metadata(self, db: Session, session_id: int, results: Dict[str, Any]):
@@ -782,3 +748,226 @@ def _save_cluster_metadata(self, db: Session, session_id: int, results: Dict[str
 
     except Exception as e:
         print(f"クラスターメタデータ保存エラー: {e}")
+
+
+# save_to_database メソッドの修正版（クラスター解析対応）
+def save_to_database_cluster_enhanced(
+    self,
+    db: Session,
+    session_name: str,
+    description: Optional[str],
+    tags: List[str],
+    user_id: str,
+    file,
+    csv_text: str,
+    df: pd.DataFrame,
+    results: Dict[str, Any],
+    plot_base64: str,
+) -> int:
+    """データベースに保存（クラスター解析対応版）"""
+    try:
+        print("=== データベース保存開始 ===")
+
+        # 分析タイプに応じたchi2_valueとdegrees_of_freedomの設定
+        analysis_type = self.get_analysis_type()
+
+        if analysis_type == "cluster":
+            # クラスター解析の場合の設定
+            evaluation_metrics = results.get("evaluation_metrics", {})
+            chi2_value = evaluation_metrics.get(
+                "silhouette_score", 0.0
+            )  # シルエット係数をchi2_valueに保存
+            degrees_of_freedom = results.get(
+                "n_clusters", 0
+            )  # クラスター数をdegrees_of_freedomに保存
+        elif analysis_type == "pca":
+            # PCAの場合: KMO値をchi2_valueに、主成分数をdegrees_of_freedomに保存
+            chi2_value = results.get("kmo", 0.0)
+            degrees_of_freedom = results.get("n_components", 0)
+        elif analysis_type == "factor":
+            # 因子分析の場合の設定
+            chi2_value = results.get("chi2", 0.0)
+            degrees_of_freedom = results.get("n_factors", 0)
+        else:
+            # コレスポンデンス分析の場合（デフォルト）
+            chi2_value = results.get("chi2", 0.0)
+            degrees_of_freedom = results.get("degrees_of_freedom", 0)
+
+        # セッション作成
+        session = AnalysisSession(
+            session_name=session_name,
+            description=description or "",
+            tags=tags,
+            user_id=user_id,
+            original_filename=file.filename,
+            analysis_timestamp=datetime.utcnow(),
+            analysis_type=analysis_type,
+            row_count=df.shape[0],
+            column_count=df.shape[1],
+            total_inertia=results.get("total_inertia", 0.0),
+            chi2_value=chi2_value,
+            degrees_of_freedom=degrees_of_freedom,
+        )
+
+        db.add(session)
+        db.flush()
+        session_id = session.id
+
+        print(f"セッション作成完了: ID={session_id}, Type={analysis_type}")
+
+        # 各種データの保存
+        self._save_original_data(db, session_id, csv_text, df)
+        self._save_coordinates_data(db, session_id, df, results)
+        self._save_eigenvalues_data(db, session_id, results)
+        self._save_visualization_data(db, session_id, plot_base64)
+
+        # クラスター解析特有のメタデータ保存
+        if analysis_type == "cluster":
+            self._save_cluster_metadata(db, session_id, results)
+
+        db.commit()
+        print(f"データベース保存完了: session_id={session_id}")
+        return session_id
+
+    except Exception as e:
+        print(f"データベース保存で致命的エラー: {str(e)}")
+        db.rollback()
+        return 0
+
+
+# BaseAnalyzer クラスの _save_coordinates_data メソッドに以下を追加
+
+
+def _save_coordinates_data(
+    self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+):
+    """座標データの保存（各分析手法で個別実装可能）"""
+    try:
+        analysis_type = self.get_analysis_type()
+
+        print(f"座標データ保存開始: analysis_type={analysis_type}")
+
+        if analysis_type == "correspondence":
+            # コレスポンデンス分析の座標保存
+            self._save_correspondence_coordinates(db, session_id, df, results)
+        elif analysis_type == "pca":
+            # PCA分析の座標保存
+            self._save_pca_coordinates(db, session_id, df, results)
+        elif analysis_type == "factor":
+            # 因子分析の座標保存
+            self._save_factor_coordinates(db, session_id, df, results)
+        elif analysis_type == "cluster":
+            # クラスター解析の座標保存
+            print("クラスター解析の座標保存を実行します")
+            self._save_cluster_coordinates(db, session_id, df, results)
+        else:
+            # デフォルト（旧来の方式）
+            self._save_default_coordinates(db, session_id, df, results)
+
+    except Exception as e:
+        print(f"座標データ保存エラー: {e}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+
+
+# ClusterAnalyzer クラスに以下のメソッドを追加する必要があります：
+
+
+def _save_cluster_coordinates(
+    self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+):
+    """クラスター解析の座標データ保存（ClusterAnalyzerクラス内）"""
+    try:
+        from models import CoordinatesData
+        import numpy as np
+
+        pca_coordinates = results.get("pca_coordinates")
+        labels = results.get("labels")
+        sample_names = results.get("sample_names", df.index.tolist())
+
+        print(
+            f"座標データ保存開始: pca_coordinates={pca_coordinates is not None}, labels={labels is not None}"
+        )
+        print(f"sample_names数: {len(sample_names) if sample_names else 0}")
+
+        if pca_coordinates is not None and labels is not None:
+            print(
+                f"PCA座標形状: {np.array(pca_coordinates).shape if pca_coordinates is not None else 'None'}"
+            )
+            print(f"ラベル数: {len(labels) if labels else 0}")
+
+            pca_array = np.array(pca_coordinates)
+            labels_array = np.array(labels)
+
+            for i, name in enumerate(sample_names):
+                if i < len(pca_array) and i < len(labels_array):
+                    # クラスターラベルを含む観測値として保存
+                    cluster_label = (
+                        int(labels_array[i]) + 1 if labels_array[i] != -1 else -1
+                    )
+
+                    coord_data = CoordinatesData(
+                        session_id=session_id,
+                        point_name=str(name),
+                        point_type="observation",
+                        dimension_1=(
+                            float(pca_array[i, 0]) if pca_array.shape[1] > 0 else 0.0
+                        ),
+                        dimension_2=(
+                            float(pca_array[i, 1]) if pca_array.shape[1] > 1 else 0.0
+                        ),
+                    )
+                    db.add(coord_data)
+
+                    if i < 3:  # 最初の3つをログ出力
+                        print(
+                            f"座標データ{i+1}: name={name}, cluster={cluster_label}, "
+                            f"dim1={coord_data.dimension_1:.3f}, dim2={coord_data.dimension_2:.3f}"
+                        )
+
+            print(f"座標データ保存完了: {len(sample_names)}件")
+
+        # クラスター中心点の保存（K-meansの場合）
+        if (
+            results.get("method") == "kmeans"
+            and results.get("cluster_centers") is not None
+        ):
+            cluster_centers = results.get("cluster_centers")
+            print(f"クラスター中心点保存: {len(cluster_centers)}個")
+
+            # PCA変換された中心点を計算
+            if pca_coordinates is not None and cluster_centers is not None:
+                try:
+                    from sklearn.decomposition import PCA
+
+                    # 元のデータでPCAを学習
+                    pca = PCA(n_components=2)
+                    pca.fit(df.select_dtypes(include=[np.number]))
+
+                    # 中心点をPCA空間に変換
+                    centers_2d = pca.transform(np.array(cluster_centers))
+
+                    for i, center_2d in enumerate(centers_2d):
+                        coord_data = CoordinatesData(
+                            session_id=session_id,
+                            point_name=f"クラスター{i+1}中心",
+                            point_type="center",
+                            dimension_1=float(center_2d[0]),
+                            dimension_2=float(center_2d[1]),
+                        )
+                        db.add(coord_data)
+                        print(
+                            f"中心点{i+1}: dim1={center_2d[0]:.3f}, dim2={center_2d[1]:.3f}"
+                        )
+
+                    print(f"クラスター中心点保存完了: {len(centers_2d)}件")
+
+                except Exception as center_error:
+                    print(f"クラスター中心点PCA変換エラー: {center_error}")
+
+    except Exception as e:
+        print(f"クラスター座標データ保存エラー: {e}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")

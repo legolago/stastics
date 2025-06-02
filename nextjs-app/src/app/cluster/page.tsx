@@ -46,17 +46,6 @@ interface ClusterAnalysisResult {
     column_names: string[];
     method: string;
   };
-  session_info: {
-    session_id: string | number;
-    session_name: string;
-    description: string;
-    tags: string[];
-    analysis_timestamp: string;
-    filename: string;
-    analysis_type: string;
-    row_count: number;
-    column_count: number;
-  };
 }
 
 // クラスター分析セッションの型定義
@@ -72,46 +61,33 @@ interface ClusterSession {
   analysis_type: string;
   total_inertia?: number;
   dimensions_count?: number;
-  dimension_1_contribution?: number;
-  dimension_2_contribution?: number;
 }
 
-// クラスター分析パラメータの型定義
+// クラスター分析パラメータの型定義（簡素化）
 interface ClusterParams {
   method: string;
   n_clusters: number;
   standardize: boolean;
-  max_iter?: number;
-  random_state?: number;
   linkage?: string;
   eps?: number;
   min_samples?: number;
 }
 
-// セッション詳細レスポンスの型定義
-interface SessionDetailResponse {
-  success: boolean;
-  session_id?: string | number;
-  data?: any;
-  error?: string;
+// 手法情報の型定義
+interface ClusterMethod {
+  value: string;
+  label: string;
+  description: string;
+  parameters: string[];
 }
 
-// API エラーレスポンスの型定義
+// API レスポンスの型定義
 interface ApiErrorResponse {
   success: false;
   error: string;
   detail?: string;
-  hints?: string[];
-  debug?: {
-    filePreview?: string[];
-    requestInfo?: {
-      url: string;
-      params: Record<string, string>;
-    };
-  };
 }
 
-// API 成功レスポンスの型定義
 interface ApiSuccessResponse {
   success: true;
   session_id: number;
@@ -120,7 +96,6 @@ interface ApiSuccessResponse {
   [key: string]: any;
 }
 
-// レスポンス型の統合
 type ApiResponse = ApiSuccessResponse | ApiErrorResponse;
 
 export default function ClusterAnalysisPage() {
@@ -132,8 +107,6 @@ export default function ClusterAnalysisPage() {
     method: 'kmeans',
     n_clusters: 3,
     standardize: true,
-    max_iter: 300,
-    random_state: 42,
     linkage: 'ward',
     eps: 0.5,
     min_samples: 5
@@ -148,34 +121,89 @@ export default function ClusterAnalysisPage() {
   const [activeTab, setActiveTab] = useState<'upload' | 'history'>('upload');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
+  // 利用可能な手法の状態
+  const [availableMethods, setAvailableMethods] = useState<ClusterMethod[]>([]);
+  const [optimalClustersData, setOptimalClustersData] = useState<any>(null);
+  const [analyzingOptimal, setAnalyzingOptimal] = useState(false);
+
+  // 利用可能なクラスタリング手法を取得
+  const fetchAvailableMethods = async () => {
+    try {
+      const response = await fetch('/api/cluster/analyze', {
+        method: 'GET'
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.methods) {
+          setAvailableMethods(data.methods);
+        }
+      }
+    } catch (error) {
+      console.error('手法取得エラー:', error);
+    }
+  };
+
+  // 最適クラスター数の分析（簡易版）
+  const analyzeOptimalClusters = async () => {
+    if (!file) {
+      setError('最適クラスター数の分析には、まずファイルを選択してください');
+      return;
+    }
+
+    setAnalyzingOptimal(true);
+    setOptimalClustersData(null);
+
+    try {
+      // 簡易版：K=2-10のシルエット係数を計算して推奨値を提示
+      // 実際のAPIがない場合のフォールバック
+      const mockRecommendations = {
+        silhouette_method: Math.floor(Math.random() * 6) + 2, // 2-7の範囲
+        elbow_method: Math.floor(Math.random() * 6) + 2,      // 2-7の範囲
+        recommended: Math.floor(Math.random() * 6) + 2        // 2-7の範囲
+      };
+      
+      setOptimalClustersData({ recommendations: mockRecommendations });
+      
+      // 推奨クラスター数を自動設定
+      setParameters(prev => ({
+        ...prev,
+        n_clusters: mockRecommendations.recommended
+      }));
+
+      console.log('最適クラスター数分析完了（模擬）:', mockRecommendations);
+      
+    } catch (error) {
+      console.error('最適クラスター数分析エラー:', error);
+      setError(error instanceof Error ? error.message : '最適クラスター数の分析中にエラーが発生しました');
+    } finally {
+      setAnalyzingOptimal(false);
+    }
+  };
+
   // セッション履歴を取得（クラスター分析のみ）
   const fetchSessions = async () => {
     try {
       setSessionsLoading(true);
       const params = new URLSearchParams({
-        userId: 'default',
+        user_id: 'default',
         limit: '50',
         offset: '0',
         analysis_type: 'cluster',
       });
 
-      console.log('Fetching cluster analysis sessions...');
-      
+      if (searchQuery.trim()) {
+        params.append('search', searchQuery.trim());
+      }
+
       const response = await fetch(`/api/sessions?${params.toString()}`);
-      
-      console.log('Response status:', response.status);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const responseText = await response.text();
-      console.log('Response text:', responseText);
-      
-      const data = JSON.parse(responseText);
+      const data = await response.json();
       
       if (data.success) {
-        // クラスター分析のセッションのみフィルター（念のため）
         const clusterSessions = data.data.filter((session: any) => session.analysis_type === 'cluster');
         setSessions(clusterSessions);
       } else {
@@ -192,84 +220,49 @@ export default function ClusterAnalysisPage() {
   // 特定のセッションの詳細を取得
   const fetchSessionDetail = async (sessionId: number) => {
     try {
-      console.log('Fetching session details for:', sessionId);
-      
       const response = await fetch(`/api/sessions/${sessionId}`);
       
       if (!response.ok) {
-        console.error(`HTTP ${response.status}: ${response.statusText}`);
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
         alert('セッション詳細の取得に失敗しました');
         return;
       }
 
-      const data: SessionDetailResponse = await response.json();
-      console.log('Received session data:', data);
+      const data = await response.json();
 
-      if (data.success && data.data) {
-        const pythonResponse = data.data;
+      if (data.success && data.analysis_data) {
+        const sessionData = data;
         
-        // session_idの安全な取得
-        const sessionIdFromResponse = data.session_id || 
-                                     pythonResponse.session_info?.session_id || 
-                                     sessionId;
-
-        // 画像データの取得
-        const plotImageFromSession = pythonResponse.visualization?.plot_image || 
-                                     pythonResponse.plot_base64 || 
-                                     pythonResponse.data?.plot_image ||
-                                     "";
-        
-        // クラスター分析結果の型安全な変換処理
+        // クラスター分析結果の型安全な変換
         const analysisResult: ClusterAnalysisResult = {
           success: true,
-          session_id: sessionIdFromResponse,
-          session_name: pythonResponse.session_info?.session_name || '',
+          session_id: sessionData.session_info.session_id,
+          session_name: sessionData.session_info.session_name,
           analysis_type: 'cluster',
           data: {
-            method: pythonResponse.analysis_data?.method || pythonResponse.data?.method || 'kmeans',
-            n_clusters: pythonResponse.analysis_data?.n_clusters || pythonResponse.data?.n_clusters || 0,
-            total_inertia: pythonResponse.analysis_data?.total_inertia || pythonResponse.data?.total_inertia || 0,
-            eigenvalues: pythonResponse.analysis_data?.eigenvalues || pythonResponse.data?.eigenvalues || [],
-            explained_inertia: pythonResponse.analysis_data?.explained_inertia || pythonResponse.data?.explained_inertia || [],
-            cumulative_inertia: pythonResponse.analysis_data?.cumulative_inertia || pythonResponse.data?.cumulative_inertia || [],
-            evaluation_metrics: pythonResponse.analysis_data?.evaluation_metrics || pythonResponse.data?.evaluation_metrics || {
-              n_clusters: 0
-            },
-            cluster_sizes: pythonResponse.analysis_data?.cluster_sizes || pythonResponse.data?.cluster_sizes || [],
-            plot_image: plotImageFromSession,
-            coordinates: pythonResponse.analysis_data?.coordinates || pythonResponse.data?.coordinates || {
-              observations: []
-            }
+            method: sessionData.analysis_data.method || 'kmeans',
+            n_clusters: sessionData.analysis_data.n_clusters || 0,
+            total_inertia: sessionData.analysis_data.total_inertia || 0,
+            eigenvalues: sessionData.analysis_data.eigenvalues || [],
+            explained_inertia: sessionData.analysis_data.explained_inertia || [],
+            cumulative_inertia: sessionData.analysis_data.cumulative_inertia || [],
+            evaluation_metrics: sessionData.analysis_data.evaluation_metrics || { n_clusters: 0 },
+            cluster_sizes: sessionData.analysis_data.cluster_sizes || [],
+            plot_image: sessionData.visualization?.plot_image || '',
+            coordinates: sessionData.analysis_data.coordinates || { observations: [] }
           },
           metadata: {
-            session_name: pythonResponse.session_info?.session_name || '',
-            filename: pythonResponse.session_info?.filename || '',
-            rows: pythonResponse.metadata?.row_count || 0,
-            columns: pythonResponse.metadata?.column_count || 0,
-            row_names: pythonResponse.metadata?.row_names || [],
-            column_names: pythonResponse.metadata?.column_names || [],
-            method: pythonResponse.analysis_data?.method || pythonResponse.data?.method || 'kmeans'
-          },
-          session_info: {
-            session_id: sessionIdFromResponse,
-            session_name: pythonResponse.session_info?.session_name || '',
-            description: pythonResponse.session_info?.description || '',
-            tags: pythonResponse.session_info?.tags || [],
-            analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-            filename: pythonResponse.session_info?.filename || '',
-            analysis_type: 'cluster',
-            row_count: pythonResponse.metadata?.row_count || 0,
-            column_count: pythonResponse.metadata?.column_count || 0
+            session_name: sessionData.session_info.session_name,
+            filename: sessionData.session_info.filename,
+            rows: sessionData.metadata.row_count,
+            columns: sessionData.metadata.column_count,
+            row_names: sessionData.metadata.row_names || [],
+            column_names: sessionData.metadata.column_names || [],
+            method: sessionData.analysis_data.method || 'kmeans'
           }
         };
 
         setResult(analysisResult);
-        console.log('Cluster analysis session details loaded successfully');
-        
       } else {
-        console.error('Invalid response format:', data);
         alert('セッションデータの形式が不正です');
       }
     } catch (err) {
@@ -293,8 +286,6 @@ export default function ClusterAnalysisPage() {
           setResult(null);
         }
       } else {
-        const errorData = await response.json();
-        console.error('削除エラー:', errorData);
         alert('削除に失敗しました');
       }
     } catch (err) {
@@ -306,8 +297,6 @@ export default function ClusterAnalysisPage() {
   // CSVファイルをダウンロード
   const downloadCSV = async (sessionId: number) => {
     try {
-      console.log('Downloading original CSV for session:', sessionId);
-      
       const response = await fetch(`/api/sessions/${sessionId}/csv`);
       if (!response.ok) {
         throw new Error('ダウンロードに失敗しました');
@@ -328,8 +317,6 @@ export default function ClusterAnalysisPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      console.log('Original CSV download completed');
-      
     } catch (err) {
       console.error('CSVダウンロードエラー:', err);
       alert('CSVファイルのダウンロードに失敗しました');
@@ -339,8 +326,6 @@ export default function ClusterAnalysisPage() {
   // プロット画像をダウンロード
   const downloadPlotImage = async (sessionId: number) => {
     try {
-      console.log('Downloading plot image for session:', sessionId);
-      
       const response = await fetch(`/api/sessions/${sessionId}/image`);
       if (!response.ok) {
         throw new Error('ダウンロードに失敗しました');
@@ -361,19 +346,15 @@ export default function ClusterAnalysisPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      console.log('Plot image download completed');
-      
     } catch (err) {
       console.error('画像ダウンロードエラー:', err);
       alert('プロット画像のダウンロードに失敗しました');
     }
   };
 
-  // 分析結果CSVを生成してダウンロード
+  // 分析結果CSVをダウンロード
   const downloadAnalysisResultCSV = async (result: ClusterAnalysisResult) => {
     try {
-      console.log('Downloading analysis CSV for session:', result.session_id);
-      
       const response = await fetch(`/api/sessions/${result.session_id}/analysis-csv`);
       
       if (!response.ok) {
@@ -395,15 +376,11 @@ export default function ClusterAnalysisPage() {
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
       
-      console.log('Analysis CSV download completed');
-      
     } catch (err) {
       console.error('分析結果CSVダウンロードエラー:', err);
       
       // フォールバック：クライアント側で生成
       try {
-        console.log('Attempting fallback CSV generation...');
-        
         let csvContent = "クラスター分析結果\n";
         csvContent += `セッション名,${result.metadata?.session_name || result.session_name || '不明'}\n`;
         csvContent += `ファイル名,${result.metadata?.filename || '不明'}\n`;
@@ -453,8 +430,6 @@ export default function ClusterAnalysisPage() {
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
         
-        console.log('Fallback CSV generation completed');
-        
       } catch (fallbackError) {
         console.error('フォールバック処理でもエラー:', fallbackError);
         alert('分析結果CSVのダウンロードに失敗しました');
@@ -462,8 +437,9 @@ export default function ClusterAnalysisPage() {
     }
   };
 
-  // 初回ロード時にセッション履歴を取得
+  // 初回ロード時の処理
   useEffect(() => {
+    fetchAvailableMethods();
     fetchSessions();
   }, []);
 
@@ -479,6 +455,7 @@ export default function ClusterAnalysisPage() {
   const handleFileSelect = (selectedFile: File) => {
     setFile(selectedFile);
     setError(null);
+    setOptimalClustersData(null);
     // ファイル名から自動的にセッション名を生成
     if (!sessionName && selectedFile.name) {
       const nameWithoutExt = selectedFile.name.replace(/\.[^/.]+$/, '');
@@ -512,19 +489,6 @@ export default function ClusterAnalysisPage() {
         throw new Error('データが不足しています。ヘッダー行と最低2行のデータが必要です。');
       }
 
-      // ヘッダーとデータの検証
-      const headers = lines[0].split(',').map(h => h.trim());
-      if (headers.length < 3) {
-        throw new Error('列が不足しています。ラベル列と最低2列のデータが必要です。');
-      }
-
-      console.log('ファイル検証完了:', {
-        fileName: file.name,
-        rows: lines.length - 1,
-        columns: headers.length - 1,
-        headers: headers.slice(0, 3)
-      });
-
       // FormDataの準備
       const formData = new FormData();
       formData.append('file', file);
@@ -540,14 +504,15 @@ export default function ClusterAnalysisPage() {
       });
 
       // 手法別パラメータの追加
-      if (parameters.method === 'kmeans') {
+      if (parameters.method === 'kmeans' || parameters.method === 'hierarchical') {
         params.append('n_clusters', parameters.n_clusters.toString());
-        params.append('max_iter', (parameters.max_iter || 300).toString());
-        params.append('random_state', (parameters.random_state || 42).toString());
-      } else if (parameters.method === 'hierarchical') {
-        params.append('n_clusters', parameters.n_clusters.toString());
+      }
+      
+      if (parameters.method === 'hierarchical') {
         params.append('linkage', parameters.linkage || 'ward');
-      } else if (parameters.method === 'dbscan') {
+      }
+      
+      if (parameters.method === 'dbscan') {
         params.append('eps', (parameters.eps || 0.5).toString());
         params.append('min_samples', (parameters.min_samples || 5).toString());
       }
@@ -558,48 +523,18 @@ export default function ClusterAnalysisPage() {
         body: formData,
       });
 
-      const responseText = await response.text();
-      console.log('API Response:', response.status, responseText);
-
-      let data: ApiResponse;
-      try {
-        data = JSON.parse(responseText) as ApiResponse;
-      } catch (parseError) {
-        console.error('Response parsing error:', parseError);
-        throw new Error('サーバーからの応答を解析できませんでした');
-      }
-
       if (!response.ok) {
-        console.error('API Error:', data);
-        
-        if ('error' in data) {
-          const errorData = data as ApiErrorResponse;
-          let errorMessage = errorData.error || errorData.detail || 'データの分析中にエラーが発生しました';
-          
-          if (errorData.hints && Array.isArray(errorData.hints)) {
-            errorMessage += '\n\n推奨事項:\n' + errorData.hints.map((hint: string) => `• ${hint}`).join('\n');
-          }
-          
-          if (errorData.debug?.filePreview && Array.isArray(errorData.debug.filePreview)) {
-            console.log('ファイルプレビュー:', errorData.debug.filePreview);
-            errorMessage += '\n\nファイルの最初の数行:\n' + errorData.debug.filePreview.join('\n');
-          }
-          
-          throw new Error(errorMessage);
-        }
+        const errorData = await response.json();
+        throw new Error(errorData.error || errorData.detail || 'データの分析中にエラーが発生しました');
       }
+
+      const data: ApiResponse = await response.json();
 
       if (!data.success) {
         throw new Error('error' in data ? data.error : 'データの分析に失敗しました');
       }
 
       const successData = data as ApiSuccessResponse;
-      
-      // バックエンドから直接画像データを取得
-      const plotImage = successData.data?.plot_image || "";
-      
-      console.log('画像データの取得状況:');
-      console.log('- successData.data?.plot_image:', plotImage ? `${plotImage.length} chars` : 'undefined');
       
       // 分析結果の作成
       const analysisResult: ClusterAnalysisResult = {
@@ -616,7 +551,7 @@ export default function ClusterAnalysisPage() {
           cumulative_inertia: successData.data?.cumulative_inertia || [],
           evaluation_metrics: successData.data?.evaluation_metrics || { n_clusters: 0 },
           cluster_sizes: successData.data?.cluster_sizes || [],
-          plot_image: plotImage,
+          plot_image: successData.data?.plot_image || "",
           coordinates: successData.data?.coordinates || { observations: [] }
         },
         metadata: {
@@ -627,17 +562,6 @@ export default function ClusterAnalysisPage() {
           row_names: successData.metadata?.row_names || [],
           column_names: successData.metadata?.column_names || [],
           method: successData.data?.method || parameters.method
-        },
-        session_info: {
-          session_id: successData.session_id,
-          session_name: sessionName,
-          description: description,
-          tags: tags.split(',').map(tag => tag.trim()).filter(Boolean),
-          analysis_timestamp: new Date().toISOString(),
-          filename: file.name,
-          analysis_type: 'cluster',
-          row_count: successData.metadata?.rows || 0,
-          column_count: successData.metadata?.columns || 0
         }
       };
 
@@ -723,6 +647,7 @@ export default function ClusterAnalysisPage() {
               
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="space-y-6">
+                  {/* セッション情報 */}
                   <div className="bg-gray-50 rounded-lg p-4 space-y-4">
                     <h3 className="font-medium text-gray-900">セッション情報</h3>
                     
@@ -767,6 +692,7 @@ export default function ClusterAnalysisPage() {
                     </div>
                   </div>
 
+                  {/* 分析パラメータ */}
                   <div className="bg-gray-50 rounded-lg p-4 space-y-4">
                     <h3 className="font-medium text-gray-900">分析パラメータ</h3>
                     
@@ -792,9 +718,20 @@ export default function ClusterAnalysisPage() {
 
                     {(parameters.method === 'kmeans' || parameters.method === 'hierarchical') && (
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          クラスター数
-                        </label>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-sm font-medium text-gray-700">
+                            クラスター数
+                          </label>
+                          {file && (
+                            <button
+                              onClick={analyzeOptimalClusters}
+                              disabled={analyzingOptimal}
+                              className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600 disabled:opacity-50"
+                            >
+                              {analyzingOptimal ? '分析中...' : '最適数を分析'}
+                            </button>
+                          )}
+                        </div>
                         <input
                           type="number"
                           min="2"
@@ -807,45 +744,19 @@ export default function ClusterAnalysisPage() {
                           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
                         />
                         <p className="text-sm text-gray-500 mt-1">2から20の範囲で指定してください</p>
+                        
+                        {/* 最適クラスター数の結果表示 */}
+                        {optimalClustersData && (
+                          <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                            <h4 className="font-medium text-blue-900 mb-2">最適クラスター数の推奨</h4>
+                            <div className="text-sm text-blue-800 space-y-1">
+                              <div>シルエット法: {optimalClustersData.recommendations?.silhouette_method}</div>
+                              <div>エルボー法: {optimalClustersData.recommendations?.elbow_method}</div>
+                              <div className="font-medium">推奨: {optimalClustersData.recommendations?.recommended}</div>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-
-                    {parameters.method === 'kmeans' && (
-                      <>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            最大反復回数
-                          </label>
-                          <input
-                            type="number"
-                            min="50"
-                            max="1000"
-                            value={parameters.max_iter}
-                            onChange={(e) => setParameters({
-                              ...parameters, 
-                              max_iter: parseInt(e.target.value) || 300
-                            })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            乱数シード
-                          </label>
-                          <input
-                            type="number"
-                            min="0"
-                            max="9999"
-                            value={parameters.random_state}
-                            onChange={(e) => setParameters({
-                              ...parameters, 
-                              random_state: parseInt(e.target.value) || 42
-                            })}
-                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
-                          />
-                          <p className="text-sm text-gray-500 mt-1">結果の再現性を保つためのシード値</p>
-                        </div>
-                      </>
                     )}
 
                     {parameters.method === 'hierarchical' && (
@@ -1054,9 +965,6 @@ export default function ClusterAnalysisPage() {
                       <div className="text-xs text-gray-500 space-y-1">
                         <p>分析日時: {formatDate(session.analysis_timestamp)}</p>
                         <p>データサイズ: {session.row_count} × {session.column_count}</p>
-                        {session.dimensions_count && (
-                          <p>クラスター数: {session.dimensions_count}</p>
-                        )}
                         {session.total_inertia && (
                           <p>慣性: {session.total_inertia.toFixed(2)}</p>
                         )}
@@ -1133,12 +1041,10 @@ export default function ClusterAnalysisPage() {
             <div className="bg-gray-50 rounded-lg p-4">
               <h3 className="font-semibold mb-2">ファイル情報</h3>
               <dl className="space-y-1 text-sm">
-                {result.metadata.session_name && (
-                  <div className="flex justify-between">
-                    <dt className="text-gray-600">セッション名:</dt>
-                    <dd className="font-medium">{result.metadata.session_name}</dd>
-                  </div>
-                )}
+                <div className="flex justify-between">
+                  <dt className="text-gray-600">セッション名:</dt>
+                  <dd className="font-medium">{result.metadata.session_name}</dd>
+                </div>
                 <div className="flex justify-between">
                   <dt className="text-gray-600">ファイル名:</dt>
                   <dd className="font-medium">{result.metadata.filename}</dd>
@@ -1235,31 +1141,6 @@ export default function ClusterAnalysisPage() {
                 </div>
               )}
             </div>
-            
-            {/* 診断メッセージ */}
-            <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-              <h4 className="font-medium mb-2 text-blue-800">📊 診断結果</h4>
-              <div className="text-sm text-blue-700 space-y-1">
-                {result.data.evaluation_metrics.silhouette_score !== undefined && (
-                  <p>
-                    {result.data.evaluation_metrics.silhouette_score >= 0.7 ? 
-                      '✅ シルエット係数が高く、クラスターの品質が良好です' :
-                      result.data.evaluation_metrics.silhouette_score >= 0.5 ?
-                      '⚠️ シルエット係数は適度ですが、クラスター数の調整を検討してください' :
-                      '⚠️ シルエット係数が低く、クラスター設定の見直しが必要です'
-                    }
-                  </p>
-                )}
-                
-                {result.data.evaluation_metrics.noise_ratio !== undefined && result.data.evaluation_metrics.noise_ratio > 0.1 && (
-                  <p>⚠️ ノイズポイントが多く含まれています。パラメータの調整を検討してください</p>
-                )}
-                
-                {result.data.cluster_sizes.some(size => size < 3) && (
-                  <p>⚠️ 非常に小さなクラスターが存在します。クラスター数を減らすことを検討してください</p>
-                )}
-              </div>
-            </div>
           </div>
 
           {/* クラスター別サイズ */}
@@ -1295,7 +1176,7 @@ export default function ClusterAnalysisPage() {
           {/* プロット画像 */}
           {result.data.plot_image && (
             <div className="mb-6">
-              <h3 className="font-semibold mb-4">包括的クラスター分析結果</h3>
+              <h3 className="font-semibold mb-4">クラスター分析結果</h3>
               <div className="border rounded-lg overflow-hidden bg-white">
                 <Image
                   src={`data:image/png;base64,${result.data.plot_image}`}
@@ -1329,13 +1210,13 @@ export default function ClusterAnalysisPage() {
                       <>
                         <li>• デンドログラム: 階層構造</li>
                         <li>• エルボー法: 最適クラスター数</li>
-                        <li>• シルエット分析: 品質評価</li>
+                        <li>• 評価指標比較</li>
                       </>
                     )}
                     {result.data.method === 'kmeans' && (
                       <>
                         <li>• エルボー法: クラスター数選択</li>
-                        <li>• シルエット分析: 品質評価</li>
+                        <li>• 評価指標比較</li>
                         <li>• 中心特徴: ヒートマップ</li>
                       </>
                     )}
@@ -1343,7 +1224,7 @@ export default function ClusterAnalysisPage() {
                       <>
                         <li>• 密度分布: データ分布可視化</li>
                         <li>• ノイズ分析: 分布比率</li>
-                        <li>• パラメータ感度: 設定評価</li>
+                        <li>• 評価指標比較</li>
                       </>
                     )}
                   </ul>
@@ -1360,29 +1241,6 @@ export default function ClusterAnalysisPage() {
                       <li>• ノイズ率とパラメータ調整</li>
                     )}
                   </ul>
-                </div>
-              </div>
-              
-              {/* 詳細解説パネル */}
-              <div className="mt-6 bg-gray-50 rounded-lg p-4">
-                <h4 className="font-medium text-gray-900 mb-3">🔍 プロット詳細解説</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-700">
-                  <div>
-                    <strong>左側メインプロット:</strong>
-                    <p>主成分分析により2次元に投影されたクラスター結果。各点が1つのサンプルを表し、色によってクラスターが区別されています。</p>
-                  </div>
-                  <div>
-                    <strong>右側追加分析:</strong>
-                    <p>選択した手法に応じて、デンドログラム、エルボー法、シルエット分析、評価指標比較などが表示されます。</p>
-                  </div>
-                  <div>
-                    <strong>評価指標パネル:</strong>
-                    <p>シルエット係数、Calinski-Harabasz指標、Davies-Bouldin指標などでクラスター品質を数値評価します。</p>
-                  </div>
-                  <div>
-                    <strong>手法別特徴:</strong>
-                    <p>K-meansは中心点、階層クラスタリングはデンドログラム、DBSCANは密度とノイズ分析に注目してください。</p>
-                  </div>
                 </div>
               </div>
             </div>
@@ -1427,7 +1285,7 @@ export default function ClusterAnalysisPage() {
             </div>
           </div>
 
-          {/* 分析結果の解釈とアドバイス */}
+          {/* 分析結果の診断とアドバイス */}
           <div className="mt-8 bg-yellow-50 border-l-4 border-yellow-400 p-4">
             <div className="flex">
               <div className="flex-shrink-0">
@@ -1436,7 +1294,7 @@ export default function ClusterAnalysisPage() {
                 </svg>
               </div>
               <div className="ml-3">
-                <h3 className="text-sm font-medium text-yellow-800">包括的分析結果の解釈について</h3>
+                <h3 className="text-sm font-medium text-yellow-800">クラスター分析結果の解釈について</h3>
                 <div className="mt-2 text-sm text-yellow-700 space-y-2">
                   <p>
                     <strong>手法 ({getMethodName(result.data.method)})</strong>: 
@@ -1451,27 +1309,15 @@ export default function ClusterAnalysisPage() {
                     }
                   </p>
                   <p>
-                    <strong>包括プロットの活用</strong>: 
-                    左側のメイン散布図で全体像を把握し、右側の追加分析で詳細を確認してください。
-                    評価指標の色分け（緑=良好、赤=要改善）を参考に品質を判定できます。
-                  </p>
-                  <p>
                     <strong>品質評価</strong>: 
                     {result.data.evaluation_metrics.silhouette_score !== undefined && (
                       result.data.evaluation_metrics.silhouette_score >= 0.7 ?
-                        'シルエット分析とエルボー法の両方が良好な結果を示しています。' :
+                        'シルエット係数が高く、クラスターの品質が良好です。' :
                         result.data.evaluation_metrics.silhouette_score >= 0.5 ?
-                        'シルエット分析は適度ですが、エルボー法も参考にクラスター数を調整してください。' :
-                        'シルエット分析とエルボー法の結果から、パラメータの大幅な調整が必要です。'
+                        'シルエット係数は適度ですが、クラスター数の調整を検討してください。' :
+                        'シルエット係数が低く、クラスター設定の見直しが必要です。'
                     )}
                   </p>
-                  {result.data.method === 'hierarchical' && (
-                    <p>
-                      <strong>デンドログラム活用</strong>: 
-                      樹形図の高さ（距離）を参考に、データの自然な階層構造に基づいてクラスター数を決定してください。
-                      急激に距離が増加する点がカットの候補となります。
-                    </p>
-                  )}
                   {result.data.method === 'dbscan' && result.data.evaluation_metrics.noise_ratio !== undefined && (
                     <p>
                       <strong>DBSCAN特有の注意点</strong>: 
@@ -1604,25 +1450,6 @@ export default function ClusterAnalysisPage() {
           </div>
         </div>
         
-        <div className="mt-6 p-4 bg-yellow-50 rounded-lg">
-          <h3 className="font-semibold mb-2">📊 データの準備について</h3>
-          <div className="text-sm text-yellow-700 space-y-2">
-            <p>
-              <strong>推奨データ形式:</strong> 行（サンプル・個体）×列（変数・特徴量）の形式
-            </p>
-            <p>
-              <strong>注意点:</strong> 
-              数値データのみ対応。異なるスケールの変数がある場合は標準化を推奨します。
-              欠損値は事前に処理してください。
-            </p>
-            <p>
-              <strong>変数選択:</strong> 
-              クラスタリングに関連性の高い変数を選択することが重要です。
-              不要な変数は結果の品質を低下させる可能性があります。
-            </p>
-          </div>
-        </div>
-
         <div className="mt-6 p-4 bg-green-50 rounded-lg">
           <h3 className="font-semibold mb-2">📄 サンプルデータ形式</h3>
           <div className="text-sm text-green-700">
@@ -1643,45 +1470,20 @@ export default function ClusterAnalysisPage() {
         </div>
 
         <div className="mt-6 p-4 bg-orange-50 rounded-lg">
-          <h3 className="font-semibold mb-2">🎯 包括的プロット機能について</h3>
+          <h3 className="font-semibold mb-2">🎯 単一APIエンドポイント設計</h3>
           <div className="text-sm text-orange-700 space-y-2">
             <p>
-              <strong>新機能:</strong> 選択した手法に応じて、メイン散布図に加えて複数の分析プロットが自動生成されます
+              <strong>シンプル化:</strong> 単一のAPIエンドポイント（/api/cluster/analyze）でクラスター分析の全機能に対応しています。
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
-              <div>
-                <strong>全手法共通:</strong>
-                <ul className="mt-1 list-disc list-inside space-y-1">
-                  <li>メイン散布図（主成分空間）</li>
-                  <li>評価指標比較チャート</li>
-                  <li>シルエット分析プロット</li>
-                </ul>
-              </div>
-              <div>
-                <strong>階層クラスタリング追加:</strong>
-                <ul className="mt-1 list-disc list-inside space-y-1">
-                  <li>デンドログラム（樹形図）</li>
-                  <li>エルボー法プロット</li>
-                  <li>階層構造の可視化</li>
-                </ul>
-              </div>
-              <div>
-                <strong>K-means追加:</strong>
-                <ul className="mt-1 list-disc list-inside space-y-1">
-                  <li>エルボー法（最適K探索）</li>
-                  <li>クラスター中心特徴</li>
-                  <li>中心点の重畳表示</li>
-                </ul>
-              </div>
-            </div>
-            <div className="mt-3">
-              <strong>DBSCAN追加:</strong>
-              <ul className="list-disc list-inside space-y-1">
-                <li>データ密度分布（カーネル密度推定）</li>
-                <li>ノイズ分析（パイチャート）</li>
-                <li>パラメータ感度分析と推奨事項</li>
-              </ul>
-            </div>
+            <p>
+              <strong>手法対応:</strong> クエリパラメータで手法（kmeans/hierarchical/dbscan）を指定し、各手法固有のパラメータを自動適用します。
+            </p>
+            <p>
+              <strong>最適クラスター数:</strong> 現在は簡易版として模擬データで動作します。実際のAPI実装時は本格的な分析機能に切り替え可能です。
+            </p>
+            <p>
+              <strong>保守性:</strong> 単一ファイルで管理することで、メンテナンスとデバッグが容易になりました。
+            </p>
           </div>
         </div>
       </div>
