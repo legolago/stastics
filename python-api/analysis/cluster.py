@@ -10,12 +10,20 @@ from sklearn.metrics import (
     silhouette_score,
     calinski_harabasz_score,
     davies_bouldin_score,
+    silhouette_samples,
 )
 from sklearn.decomposition import PCA
 from scipy.cluster.hierarchy import dendrogram, linkage
 from scipy.spatial.distance import pdist
 import seaborn as sns
 from .base import BaseAnalyzer
+
+
+# 簡易版のコンストラクタ（必要に応じて）
+def __init__(self):
+    """ClusterAnalyzerのコンストラクタ"""
+    super().__init__()
+    print("ClusterAnalyzer初期化完了")
 
 
 class ClusterAnalyzer(BaseAnalyzer):
@@ -91,15 +99,18 @@ class ClusterAnalyzer(BaseAnalyzer):
     def _compute_cluster_analysis(
         self, df: pd.DataFrame, method: str, n_clusters: int, **kwargs
     ) -> Dict[str, Any]:
-        """クラスター分析の計算"""
+        """修正版クラスター分析の計算"""
         try:
             print(f"クラスター分析計算開始: method={method}, n_clusters={n_clusters}")
+            print(f"データ形状: {df.shape}")
 
             # クラスタリングアルゴリズムの実行
             if method == "kmeans":
                 cluster_result = self._compute_kmeans(df, n_clusters, **kwargs)
             elif method == "hierarchical":
-                cluster_result = self._compute_hierarchical(df, n_clusters, **kwargs)
+                cluster_result = self._compute_hierarchical_fixed(
+                    df, n_clusters, **kwargs
+                )  # 修正版を使用
             elif method == "dbscan":
                 cluster_result = self._compute_dbscan(df, **kwargs)
                 n_clusters = len(np.unique(cluster_result["labels"]))
@@ -108,6 +119,12 @@ class ClusterAnalyzer(BaseAnalyzer):
 
             labels = cluster_result["labels"]
             centers = cluster_result.get("centers", None)
+            dendrogram_data = cluster_result.get("dendrogram_data", None)
+
+            print(f"クラスタリング完了: {len(np.unique(labels))} クラスター")
+            print(
+                f"デンドログラムデータ: {'有' if dendrogram_data is not None else '無'}"
+            )
 
             # クラスター評価指標の計算
             evaluation_metrics = self._compute_evaluation_metrics(df, labels)
@@ -128,9 +145,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                 "cluster_sizes": [int(np.sum(labels == i)) for i in range(n_clusters)],
                 "sample_names": df.index.tolist(),
                 "feature_names": df.columns.tolist(),
-                "eigenvalues": pca_result[
-                    "explained_variance_ratio"
-                ],  # PCAの寄与率を固有値として保存
+                "eigenvalues": pca_result["explained_variance_ratio"],
                 "explained_inertia": pca_result["explained_variance_ratio"],
                 "cumulative_inertia": np.cumsum(
                     pca_result["explained_variance_ratio"]
@@ -140,7 +155,7 @@ class ClusterAnalyzer(BaseAnalyzer):
 
             # 階層クラスタリングの場合はデンドログラムデータを追加
             if method == "hierarchical":
-                results["dendrogram_data"] = cluster_result.get("dendrogram_data", None)
+                results["dendrogram_data"] = dendrogram_data
 
             return results
 
@@ -172,13 +187,15 @@ class ClusterAnalyzer(BaseAnalyzer):
             "inertia": kmeans.inertia_,
         }
 
-    def _compute_hierarchical(
+    def _compute_hierarchical_fixed(
         self, df: pd.DataFrame, n_clusters: int, **kwargs
     ) -> Dict[str, Any]:
-        """修正版階層クラスタリング - デンドログラム対応改善"""
+        """修正版階層クラスタリング - デンドログラム安定化"""
         linkage_method = kwargs.get("linkage", "ward")
 
         try:
+            print(f"階層クラスタリング開始: method={linkage_method}, samples={len(df)}")
+
             # 階層クラスタリング実行
             from sklearn.cluster import AgglomerativeClustering
 
@@ -186,36 +203,84 @@ class ClusterAnalyzer(BaseAnalyzer):
                 n_clusters=n_clusters, linkage=linkage_method
             )
             labels = clustering.fit_predict(df)
-            print(f"階層クラスタリング完了: {len(np.unique(labels))} クラスター")
+            print(f"sklearn clustering完了: {len(np.unique(labels))} クラスター")
 
             # デンドログラム用のリンケージ行列を計算
             linkage_matrix = None
+
             try:
-                from scipy.cluster.hierarchy import linkage
-                from scipy.spatial.distance import pdist
-
-                # データサイズチェック
+                # サンプル数チェック
                 n_samples = len(df)
-                print(f"サンプル数: {n_samples}")
 
-                if n_samples > 100:
-                    print("サンプル数が多いため、デンドログラム計算をスキップします")
+                if n_samples > 150:
+                    print(
+                        f"サンプル数が多すぎます({n_samples})。デンドログラム計算をスキップ。"
+                    )
                     linkage_matrix = None
                 else:
-                    # linkage計算を試行
+                    from scipy.cluster.hierarchy import linkage
+                    from scipy.spatial.distance import pdist
+                    import numpy as np
+
+                    # データ型の確認と修正
+                    data_array = df.values.astype(np.float64)
+                    print(
+                        f"データ配列形状: {data_array.shape}, dtype: {data_array.dtype}"
+                    )
+
+                    # NaNや無限値のチェック
+                    if np.any(np.isnan(data_array)) or np.any(np.isinf(data_array)):
+                        print("NaNまたは無限値を検出。データをクリーニングします。")
+                        data_array = np.nan_to_num(
+                            data_array, nan=0.0, posinf=1e10, neginf=-1e10
+                        )
+
+                    # リンケージ計算
                     if linkage_method == "ward":
                         print("Ward法でリンケージ計算中...")
-                        linkage_matrix = linkage(df.values, method="ward")
+                        linkage_matrix = linkage(
+                            data_array, method="ward", metric="euclidean"
+                        )
                     else:
                         print(f"{linkage_method}法でリンケージ計算中...")
                         # 距離行列を事前計算
-                        distance_matrix = pdist(df.values, metric="euclidean")
-                        linkage_matrix = linkage(distance_matrix, method=linkage_method)
+                        distances = pdist(data_array, metric="euclidean")
+
+                        # 距離に問題がないかチェック
+                        if np.any(np.isnan(distances)) or np.any(np.isinf(distances)):
+                            print(
+                                "距離計算に問題があります。ユークリッド距離を再計算します。"
+                            )
+                            distances = np.nan_to_num(
+                                distances, nan=1.0, posinf=1e10, neginf=0.0
+                            )
+
+                        linkage_matrix = linkage(distances, method=linkage_method)
 
                     print(f"リンケージ行列計算完了: {linkage_matrix.shape}")
 
-            except Exception as e:
-                print(f"デンドログラム計算エラー: {e}")
+                    # リンケージ行列の妥当性チェック
+                    if linkage_matrix is not None:
+                        if np.any(np.isnan(linkage_matrix)) or np.any(
+                            np.isinf(linkage_matrix)
+                        ):
+                            print(
+                                "リンケージ行列に無効な値があります。None に設定します。"
+                            )
+                            linkage_matrix = None
+                        elif linkage_matrix.shape[0] != n_samples - 1:
+                            print(
+                                f"リンケージ行列のサイズが不正です: {linkage_matrix.shape[0]} != {n_samples - 1}"
+                            )
+                            linkage_matrix = None
+                        else:
+                            print("リンケージ行列は正常です。")
+
+            except Exception as linkage_error:
+                print(f"リンケージ計算エラー: {linkage_error}")
+                import traceback
+
+                print(f"リンケージエラー詳細:\n{traceback.format_exc()}")
                 linkage_matrix = None
 
             return {
@@ -225,18 +290,27 @@ class ClusterAnalyzer(BaseAnalyzer):
             }
 
         except Exception as e:
-            print(f"階層クラスタリングエラー: {e}")
-            # フォールバック: 単純なクラスタリング
-            from sklearn.cluster import KMeans
+            print(f"階層クラスタリング全体エラー: {e}")
+            import traceback
 
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-            labels = kmeans.fit_predict(df)
+            print(f"階層エラー詳細:\n{traceback.format_exc()}")
 
-            return {
-                "labels": labels,
-                "centers": None,
-                "dendrogram_data": None,
-            }
+            # フォールバック: K-meansに切り替え
+            print("フォールバック: K-meansを使用します")
+            try:
+                from sklearn.cluster import KMeans
+
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                labels = kmeans.fit_predict(df)
+
+                return {
+                    "labels": labels,
+                    "centers": kmeans.cluster_centers_,
+                    "dendrogram_data": None,
+                }
+            except Exception as fallback_error:
+                print(f"フォールバックエラー: {fallback_error}")
+                raise
 
     def _compute_dbscan(self, df: pd.DataFrame, **kwargs) -> Dict[str, Any]:
         """DBSCANクラスタリング"""
@@ -423,6 +497,105 @@ class ClusterAnalyzer(BaseAnalyzer):
             print(f"詳細:\n{traceback.format_exc()}")
             return ""
 
+    def _create_dendrogram_alternative(self, ax, results, df):
+        """デンドログラム代替表示"""
+        try:
+            ax.set_facecolor("white")
+
+            # クラスター情報を表示
+            labels = results.get("labels", [])
+            n_clusters = results.get("n_clusters", 0)
+            method = results.get("method", "unknown")
+
+            if len(labels) > 0:
+                # クラスター別サンプル数
+                cluster_counts = {}
+                for i in range(n_clusters):
+                    count = np.sum(np.array(labels) == i)
+                    cluster_counts[f"クラスター {i+1}"] = count
+
+                # 横棒グラフで表示
+                names = list(cluster_counts.keys())
+                values = list(cluster_counts.values())
+
+                colors = plt.cm.Set3(np.linspace(0, 1, len(names)))
+                bars = ax.barh(
+                    names, values, color=colors, alpha=0.7, edgecolor="black"
+                )
+
+                # 値をバーの右端に表示
+                for bar, value in zip(bars, values):
+                    width = bar.get_width()
+                    ax.text(
+                        width + 0.1,
+                        bar.get_y() + bar.get_height() / 2,
+                        f"{value}",
+                        ha="left",
+                        va="center",
+                        fontsize=10,
+                        fontweight="bold",
+                    )
+
+                ax.set_xlabel("サンプル数", fontsize=12)
+                ax.set_title(
+                    "クラスター別サンプル分布\n（デンドログラム代替表示）",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.grid(True, linestyle=":", alpha=0.3, axis="x")
+
+                # 情報テキスト
+                total_samples = len(labels)
+                info_text = f"総サンプル数: {total_samples}\n手法: {method}\nクラスター数: {n_clusters}"
+                ax.text(
+                    0.98,
+                    0.02,
+                    info_text,
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    bbox=dict(
+                        boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.8
+                    ),
+                    verticalalignment="bottom",
+                    horizontalalignment="right",
+                )
+
+            else:
+                # データがない場合
+                ax.text(
+                    0.5,
+                    0.5,
+                    "クラスターデータが\n利用できません\n\nデンドログラムは\n表示できません",
+                    ha="center",
+                    va="center",
+                    fontsize=12,
+                    transform=ax.transAxes,
+                    bbox=dict(
+                        boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8
+                    ),
+                )
+                ax.set_title(
+                    "デンドログラム（利用不可）", fontsize=12, fontweight="bold"
+                )
+
+            # 軸の調整
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+        except Exception as e:
+            print(f"代替表示エラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"表示エラー:\n{str(e)}",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("表示エラー", fontsize=12, fontweight="bold")
+
     # analyze メソッドにもデバッグ情報を追加
     def analyze_with_debug(
         self,
@@ -468,9 +641,10 @@ class ClusterAnalyzer(BaseAnalyzer):
             print(f"トレースバック:\n{traceback.format_exc()}")
             raise
 
-    def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
+    def create_plot_fixed(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
+        """修正版包括プロット作成"""
         try:
-            print("=== プロット作成開始 ===")
+            print("=== 修正版プロット作成開始 ===")
 
             # 日本語フォント設定
             self.setup_japanese_font()
@@ -481,45 +655,44 @@ class ClusterAnalyzer(BaseAnalyzer):
             explained_variance_ratio = results["pca_explained_variance_ratio"]
             n_clusters = results["n_clusters"]
 
+            print(
+                f"プロット情報: method={method}, n_clusters={n_clusters}, samples={len(labels)}"
+            )
+
             # 手法に応じたレイアウト設定
             if method == "hierarchical":
-                # 階層クラスタリング: メイン散布図 + デンドログラム + エルボー法
                 fig = plt.figure(figsize=(20, 12))
                 gs = fig.add_gridspec(
                     2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
                 )
-                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図（左側全体）
-                ax_dendro = fig.add_subplot(gs[0, 1])  # デンドログラム（右上）
-                ax_elbow = fig.add_subplot(gs[1, 1])  # エルボー法（右中）
-                ax_silhouette = fig.add_subplot(gs[0, 2])  # シルエット分析（右上右）
-                ax_metrics = fig.add_subplot(gs[1, 2])  # 評価指標（右下右）
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_dendro = fig.add_subplot(gs[0, 1])  # デンドログラム
+                ax_elbow = fig.add_subplot(gs[1, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[0, 2])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[1, 2])  # 評価指標
             elif method == "kmeans":
-                # K-means: メイン散布図 + エルボー法 + シルエット分析 + 評価指標
                 fig = plt.figure(figsize=(20, 12))
                 gs = fig.add_gridspec(
                     2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
                 )
-                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図（左側全体）
-                ax_elbow = fig.add_subplot(gs[0, 1])  # エルボー法（右上）
-                ax_silhouette = fig.add_subplot(gs[1, 1])  # シルエット分析（右中）
-                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標（右上右）
-                ax_center = fig.add_subplot(gs[1, 2])  # クラスター中心の特徴（右下右）
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_elbow = fig.add_subplot(gs[0, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[1, 1])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_center = fig.add_subplot(gs[1, 2])  # クラスター中心
             else:  # DBSCAN
-                # DBSCAN: メイン散布図 + 密度分布 + ノイズ分析 + パラメータ感度
                 fig = plt.figure(figsize=(20, 12))
                 gs = fig.add_gridspec(
                     2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
                 )
-                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図（左側全体）
-                ax_density = fig.add_subplot(gs[0, 1])  # 密度分布（右上）
-                ax_noise = fig.add_subplot(gs[1, 1])  # ノイズ分析（右中）
-                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標（右上右）
-                ax_param = fig.add_subplot(gs[1, 2])  # パラメータ感度（右下右）
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_density = fig.add_subplot(gs[0, 1])  # 密度分布
+                ax_noise = fig.add_subplot(gs[1, 1])  # ノイズ分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_param = fig.add_subplot(gs[1, 2])  # パラメータ感度
 
             # 背景設定
             fig.patch.set_facecolor("white")
-
-            # カラーパレットの設定
             colors = plt.cm.Set3(np.linspace(0, 1, max(n_clusters, 3)))
 
             # 1. メインのクラスター散布図
@@ -534,43 +707,57 @@ class ClusterAnalyzer(BaseAnalyzer):
                 df,
             )
 
-            # 2. 手法別の追加プロット
-            if method == "hierarchical":
-                self._create_dendrogram_plot(ax_dendro, results, df)
-                self._create_elbow_plot(ax_elbow, df, results)
-                self._create_silhouette_analysis_plot(
-                    ax_silhouette, df, labels, results
-                )
-                self._create_metrics_comparison_plot(ax_metrics, results)
+            # 2. 手法別の追加プロット（修正版）
+            try:
+                if method == "hierarchical":
+                    print("階層クラスタリングプロット作成中...")
+                    self._create_dendrogram_plot_fixed(ax_dendro, results, df)
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot(ax_metrics, results)
 
-            elif method == "kmeans":
-                self._create_elbow_plot(ax_elbow, df, results)
-                self._create_silhouette_analysis_plot(
-                    ax_silhouette, df, labels, results
-                )
-                self._create_metrics_comparison_plot(ax_metrics, results)
-                self._create_cluster_centers_plot(ax_center, results, df)
+                elif method == "kmeans":
+                    print("K-meansプロット作成中...")
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot(ax_metrics, results)
+                    self._create_cluster_centers_plot_safe(ax_center, results, df)
 
-            else:  # DBSCAN
-                self._create_density_plot(ax_density, pca_coordinates, labels)
-                self._create_noise_analysis_plot(ax_noise, labels, results)
-                self._create_metrics_comparison_plot(ax_metrics, results)
-                self._create_parameter_sensitivity_plot(ax_param, results)
+                else:  # DBSCAN
+                    print("DBSCANプロット作成中...")
+                    self._create_density_plot_safe(ax_density, pca_coordinates, labels)
+                    self._create_noise_analysis_plot(ax_noise, labels, results)
+                    self._create_metrics_comparison_plot(ax_metrics, results)
+                    self._create_parameter_sensitivity_plot(ax_param, results)
+
+            except Exception as subplot_error:
+                print(f"サブプロット作成エラー: {subplot_error}")
+                # エラーが発生したサブプロットにエラーメッセージを表示
+                pass  # メインプロットは作成済みなので続行
 
             # レイアウト調整
             plt.tight_layout()
 
             # Base64エンコード
             plot_base64 = self.save_plot_as_base64(fig)
-            print(f"プロット作成完了")
+            print(f"修正版プロット作成完了")
             return plot_base64
 
         except Exception as e:
-            print(f"プロット作成エラー: {str(e)}")
+            print(f"修正版プロット作成エラー: {str(e)}")
             import traceback
 
             print(f"詳細:\n{traceback.format_exc()}")
-            return ""
+
+            # フォールバック: シンプルなプロットを作成
+            try:
+                return self.create_simple_plot_fallback(results, df)
+            except:
+                return ""
 
     def _create_enhanced_cluster_scatter_plot(
         self,
@@ -853,135 +1040,223 @@ class ClusterAnalyzer(BaseAnalyzer):
         except Exception as e:
             print(f"散布図作成エラー: {e}")
 
-    def _create_dendrogram_plot(self, ax, results, df):
-        """修正版デンドログラム作成"""
+    def _create_dendrogram_plot_fixed(self, ax, results, df):
+        """修正版デンドログラム作成 - 安定性向上"""
         try:
             ax.set_facecolor("white")
             dendrogram_data = results.get("dendrogram_data")
 
+            print(f"デンドログラム作成開始: データ有無={dendrogram_data is not None}")
+
             if dendrogram_data is None:
-                # デンドログラムデータがない場合の処理
-                ax.text(
-                    0.5,
-                    0.5,
-                    "デンドログラムデータが\n利用できません\n\n理由:\n• サンプル数が多すぎる\n• 計算エラーが発生\n• 他の手法が選択されている",
-                    ha="center",
-                    va="center",
-                    fontsize=10,
-                    transform=ax.transAxes,
-                    bbox=dict(
-                        boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8
-                    ),
-                )
-                ax.set_title(
-                    "デンドログラム（利用不可）", fontsize=14, fontweight="bold"
-                )
-                ax.set_xlim(0, 1)
-                ax.set_ylim(0, 1)
-                ax.axis("off")
+                # デンドログラムデータがない場合の代替表示
+                self._create_dendrogram_alternative(ax, results, df)
                 return
 
             try:
                 from scipy.cluster.hierarchy import dendrogram
+                import numpy as np
 
-                # サンプル数の制限
-                max_labels = 30
-                labels = df.index.tolist()
+                # データの妥当性再チェック
+                if not isinstance(dendrogram_data, np.ndarray):
+                    print("デンドログラムデータが配列ではありません")
+                    self._create_dendrogram_alternative(ax, results, df)
+                    return
 
-                # ラベルの処理
-                if len(labels) > max_labels:
-                    display_labels = labels[:max_labels]
-                    truncate_mode = "lastp"
-                    p_value = max_labels
-                else:
-                    display_labels = labels
+                if dendrogram_data.shape[1] != 4:
+                    print(f"デンドログラムデータの形状が不正: {dendrogram_data.shape}")
+                    self._create_dendrogram_alternative(ax, results, df)
+                    return
+
+                # ラベルの準備
+                n_samples = len(df)
+                max_display_labels = 25  # 表示ラベル数を制限
+
+                if n_samples <= max_display_labels:
+                    labels = [str(idx) for idx in df.index]
                     truncate_mode = None
-                    p_value = None
+                    p_param = None
+                else:
+                    labels = None  # ラベルなしで描画
+                    truncate_mode = "lastp"
+                    p_param = max_display_labels
 
-                print(f"デンドログラム描画開始: {len(display_labels)} ラベル")
+                print(
+                    f"デンドログラム描画パラメータ: labels={len(labels) if labels else 0}, truncate={truncate_mode}"
+                )
 
                 # デンドログラム描画
-                dend_kwargs = {
+                dend_params = {
                     "ax": ax,
                     "leaf_rotation": 45,
-                    "leaf_font_size": 8,
-                    "color_threshold": (
-                        0.7 * np.max(dendrogram_data[:, 2])
-                        if len(dendrogram_data) > 0
-                        else 0
-                    ),
-                    "above_threshold_color": "gray",
+                    "leaf_font_size": 8 if labels else 10,
+                    "color_threshold": 0.7 * np.max(dendrogram_data[:, 2]),
+                    "above_threshold_color": "lightgray",
                 }
 
-                # ラベル設定
-                if len(display_labels) <= max_labels:
-                    dend_kwargs["labels"] = display_labels
-
-                # 切り詰めモード設定
+                if labels:
+                    dend_params["labels"] = labels
                 if truncate_mode:
-                    dend_kwargs["truncate_mode"] = truncate_mode
-                    dend_kwargs["p"] = p_value
+                    dend_params["truncate_mode"] = truncate_mode
+                    dend_params["p"] = p_param
 
-                dend = dendrogram(dendrogram_data, **dend_kwargs)
+                # 実際に描画
+                dend = dendrogram(dendrogram_data, **dend_params)
 
+                # タイトルと軸ラベル
                 ax.set_title("デンドログラム（樹形図）", fontsize=14, fontweight="bold")
                 ax.set_xlabel("サンプル", fontsize=12)
                 ax.set_ylabel("クラスター間距離", fontsize=12)
                 ax.grid(True, linestyle=":", alpha=0.3)
 
                 # カットラインを表示
-                if len(dendrogram_data) > 0:
-                    cut_height = 0.7 * np.max(dendrogram_data[:, 2])
-                    ax.axhline(
-                        y=cut_height,
-                        color="red",
-                        linestyle="--",
-                        alpha=0.7,
-                        linewidth=2,
-                    )
-                    ax.text(
-                        0.02,
-                        0.98,
-                        f"推奨カット高さ: {cut_height:.2f}",
-                        transform=ax.transAxes,
-                        fontsize=9,
-                        bbox=dict(
-                            boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8
-                        ),
-                        verticalalignment="top",
-                    )
+                cut_height = 0.7 * np.max(dendrogram_data[:, 2])
+                ax.axhline(
+                    y=cut_height, color="red", linestyle="--", alpha=0.8, linewidth=2
+                )
+
+                # 情報ボックス
+                info_text = f"サンプル数: {n_samples}\n推奨カット: {cut_height:.2f}"
+                ax.text(
+                    0.02,
+                    0.98,
+                    info_text,
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    bbox=dict(
+                        boxstyle="round,pad=0.3", facecolor="lightyellow", alpha=0.9
+                    ),
+                    verticalalignment="top",
+                )
 
                 print("デンドログラム描画完了")
 
             except Exception as plot_error:
                 print(f"デンドログラム描画エラー: {plot_error}")
-                ax.text(
-                    0.5,
-                    0.5,
-                    f"描画エラー:\n{str(plot_error)}",
-                    ha="center",
-                    va="center",
-                    fontsize=10,
-                    transform=ax.transAxes,
-                    bbox=dict(
-                        boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8
-                    ),
-                )
-                ax.set_title("デンドログラム（エラー）", fontsize=14, fontweight="bold")
+                import traceback
+
+                print(f"描画エラー詳細:\n{traceback.format_exc()}")
+                self._create_dendrogram_alternative(ax, results, df)
 
         except Exception as e:
             print(f"デンドログラム全体エラー: {e}")
-            ax.text(
-                0.5,
-                0.5,
-                f"全体エラー:\n{str(e)}",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                fontsize=10,
-                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
-            )
-            ax.set_title("デンドログラム（失敗）", fontsize=14, fontweight="bold")
+            self._create_dendrogram_alternative(ax, results, df)
+
+    def _create_dendrogram_plot_enhanced(self, ax, results, df):
+        """拡張版デンドログラム作成"""
+        try:
+            ax.set_facecolor("white")
+            dendrogram_data = results.get("dendrogram_data")
+
+            print(f"デンドログラム作成開始: データ有無={dendrogram_data is not None}")
+
+            if dendrogram_data is None:
+                # デンドログラムデータがない場合の代替表示
+                self._create_dendrogram_alternative(ax, results, df)
+                return
+
+            try:
+                from scipy.cluster.hierarchy import dendrogram
+                import numpy as np
+
+                # データの妥当性再チェック
+                if not isinstance(dendrogram_data, np.ndarray):
+                    print("デンドログラムデータが配列ではありません")
+                    self._create_dendrogram_alternative(ax, results, df)
+                    return
+
+                if dendrogram_data.shape[1] != 4:
+                    print(f"デンドログラムデータの形状が不正: {dendrogram_data.shape}")
+                    self._create_dendrogram_alternative(ax, results, df)
+                    return
+
+                # ラベルの準備
+                n_samples = len(df)
+                max_display_labels = 25  # 表示ラベル数を制限
+
+                if n_samples <= max_display_labels:
+                    labels = [str(idx) for idx in df.index]
+                    truncate_mode = None
+                    p_param = None
+                else:
+                    labels = None  # ラベルなしで描画
+                    truncate_mode = "lastp"
+                    p_param = max_display_labels
+
+                print(
+                    f"デンドログラム描画パラメータ: labels={len(labels) if labels else 0}, truncate={truncate_mode}"
+                )
+
+                # デンドログラム描画
+                dend_params = {
+                    "ax": ax,
+                    "leaf_rotation": 45,
+                    "leaf_font_size": 8 if labels else 10,
+                    "color_threshold": 0.7 * np.max(dendrogram_data[:, 2]),
+                    "above_threshold_color": "lightgray",
+                }
+
+                if labels:
+                    dend_params["labels"] = labels
+                if truncate_mode:
+                    dend_params["truncate_mode"] = truncate_mode
+                    dend_params["p"] = p_param
+
+                # 実際に描画
+                dend = dendrogram(dendrogram_data, **dend_params)
+
+                # タイトルと軸ラベル
+                ax.set_title("デンドログラム（樹形図）", fontsize=14, fontweight="bold")
+                ax.set_xlabel("サンプル", fontsize=12)
+                ax.set_ylabel("クラスター間距離", fontsize=12)
+                ax.grid(True, linestyle=":", alpha=0.3)
+
+                # カットラインを表示
+                cut_height = 0.7 * np.max(dendrogram_data[:, 2])
+                ax.axhline(
+                    y=cut_height, color="red", linestyle="--", alpha=0.8, linewidth=2
+                )
+
+                # 情報ボックス
+                info_text = f"サンプル数: {n_samples}\n推奨カット: {cut_height:.2f}"
+                ax.text(
+                    0.02,
+                    0.98,
+                    info_text,
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    bbox=dict(
+                        boxstyle="round,pad=0.3", facecolor="lightyellow", alpha=0.9
+                    ),
+                    verticalalignment="top",
+                )
+
+                print("デンドログラム描画完了")
+
+            except Exception as plot_error:
+                print(f"デンドログラム描画エラー: {plot_error}")
+                import traceback
+
+                print(f"描画エラー詳細:\n{traceback.format_exc()}")
+                self._create_dendrogram_alternative(ax, results, df)
+
+        except Exception as e:
+            print(f"デンドログラム全体エラー: {e}")
+            self._create_dendrogram_alternative(ax, results, df)
+
+    def _create_dendrogram_plot_safe(self, ax, results, df):
+        """安全版デンドログラム作成"""
+        try:
+            # デンドログラムデータの確認
+            dendrogram_data = results.get("dendrogram_data")
+            if dendrogram_data is not None:
+                self._create_dendrogram_plot_enhanced(ax, results, df)
+            else:
+                print("デンドログラムデータがないため、代替表示を使用")
+                self._create_dendrogram_alternative(ax, results, df)
+        except Exception as e:
+            print(f"デンドログラムプロットエラー: {e}")
+            self._create_dendrogram_alternative(ax, results, df)
 
     def _create_simple_dendrogram_fallback(self, ax, df, results):
         """シンプルなデンドログラム代替表示"""
@@ -1066,6 +1341,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     va="center",
                     transform=ax.transAxes,
                 )
+                ax.set_title("エルボー法", fontsize=14, fontweight="bold")
                 return
 
             scaler = StandardScaler()
@@ -1076,9 +1352,24 @@ class ClusterAnalyzer(BaseAnalyzer):
             inertias = []
 
             for k in k_range:
-                kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                kmeans.fit(scaled_data)
-                inertias.append(kmeans.inertia_)
+                try:
+                    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    kmeans.fit(scaled_data)
+                    inertias.append(kmeans.inertia_)
+                except Exception as e:
+                    print(f"K={k}でのエラー: {e}")
+                    inertias.append(0)  # エラー時は0を追加
+
+            if not inertias:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "慣性計算エラー",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                return
 
             # プロット
             ax.plot(k_range, inertias, "bo-", linewidth=2, markersize=8)
@@ -1094,23 +1385,47 @@ class ClusterAnalyzer(BaseAnalyzer):
                     markersize=12,
                     label=f"選択されたK={current_k}",
                 )
+                ax.legend()
 
             ax.set_xlabel("クラスター数 (K)", fontsize=12)
             ax.set_ylabel("慣性 (SSE)", fontsize=12)
             ax.set_title("エルボー法", fontsize=14, fontweight="bold")
             ax.grid(True, linestyle=":", alpha=0.6)
-            ax.legend()
 
         except Exception as e:
             print(f"エルボー法プロット作成エラー: {e}")
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"エルボー法\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("エルボー法（エラー）", fontsize=14, fontweight="bold")
+
+    def _create_elbow_plot_enhanced(self, ax, df, results):
+        """拡張版エルボー法プロット"""
+        self._create_elbow_plot(ax, df, results)
+
+    def _create_elbow_plot_safe(self, ax, df, results):
+        """安全版エルボー法プロット"""
+        try:
+            self._create_elbow_plot(ax, df, results)
+        except Exception as e:
+            print(f"エルボー法プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"エルボー法\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("エルボー法（エラー）", fontsize=12, fontweight="bold")
 
     def _create_silhouette_analysis_plot(self, ax, df, labels, results):
         """シルエット分析プロット"""
@@ -1118,6 +1433,7 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.set_facecolor("white")
 
             from sklearn.metrics import silhouette_samples
+            import numpy as np
 
             # 数値データの準備
             numeric_df = df.select_dtypes(include=[np.number])
@@ -1130,6 +1446,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     va="center",
                     transform=ax.transAxes,
                 )
+                ax.set_title("シルエット分析", fontsize=14, fontweight="bold")
                 return
 
             # ノイズポイントを除外
@@ -1143,6 +1460,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     va="center",
                     transform=ax.transAxes,
                 )
+                ax.set_title("シルエット分析", fontsize=14, fontweight="bold")
                 return
 
             valid_data = numeric_df[valid_mask]
@@ -1169,6 +1487,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     alpha=0.7,
                 )
 
+                # クラスターラベルをY軸に表示
                 ax.text(-0.05, y_lower + 0.5 * size_cluster_i, str(cluster_label + 1))
                 y_lower = y_upper + 10
 
@@ -1192,11 +1511,170 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"シルエット分析\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("シルエット分析（エラー）", fontsize=14, fontweight="bold")
+
+    def _create_silhouette_analysis_plot_enhanced(self, ax, df, labels, results):
+        """拡張版シルエット分析プロット"""
+        self._create_silhouette_analysis_plot(ax, df, labels, results)
+
+    def _create_silhouette_analysis_plot_safe(self, ax, df, labels, results):
+        """安全版シルエット分析プロット"""
+        try:
+            self._create_silhouette_analysis_plot(ax, df, labels, results)
+        except Exception as e:
+            print(f"シルエット分析プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"シルエット分析\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("シルエット分析（エラー）", fontsize=12, fontweight="bold")
+
+    def _create_density_plot(self, ax, coordinates, labels):
+        """密度分布プロット（DBSCAN用）"""
+        try:
+            ax.set_facecolor("white")
+
+            # 密度の可視化（ヒートマップ）
+            from scipy.stats import gaussian_kde
+
+            if len(coordinates) < 3:
+                ax.text(
+                    0.5,
+                    0.5,
+                    "データ点が\n不足",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+                ax.set_title("密度分布", fontsize=14, fontweight="bold")
+                return
+
+            x, y = coordinates[:, 0], coordinates[:, 1]
+
+            # 密度推定
+            xy = np.vstack([x, y])
+            kde = gaussian_kde(xy)
+
+            # グリッド作成
+            x_min, x_max = x.min() - 1, x.max() + 1
+            y_min, y_max = y.min() - 1, y.max() + 1
+            xx, yy = np.mgrid[x_min:x_max:50j, y_min:y_max:50j]
+            positions = np.vstack([xx.ravel(), yy.ravel()])
+
+            # 密度計算
+            density = np.reshape(kde(positions).T, xx.shape)
+
+            # プロット
+            ax.contourf(xx, yy, density, levels=15, cmap="Blues", alpha=0.6)
+            ax.contour(
+                xx, yy, density, levels=15, colors="navy", alpha=0.3, linewidths=0.5
+            )
+
+            # データポイントをオーバーレイ
+            unique_labels = np.unique(labels)
+            colors = plt.cm.Set3(np.linspace(0, 1, len(unique_labels)))
+            for i, label in enumerate(unique_labels):
+                mask = labels == label
+                if label == -1:
+                    ax.scatter(x[mask], y[mask], c="red", marker="x", s=30, alpha=0.8)
+                else:
+                    ax.scatter(x[mask], y[mask], c=[colors[i]], s=30, alpha=0.8)
+
+            ax.set_title("データ密度分布", fontsize=14, fontweight="bold")
+            ax.set_xlabel("第1主成分", fontsize=12)
+            ax.set_ylabel("第2主成分", fontsize=12)
+
+        except Exception as e:
+            print(f"密度プロット作成エラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"密度分布\nエラー",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=12,
+            )
+            ax.set_title("密度分布（エラー）", fontsize=14, fontweight="bold")
+
+    def _create_density_plot_safe(self, ax, coordinates, labels):
+        """安全版密度プロット"""
+        try:
+            self._create_density_plot(ax, coordinates, labels)
+        except Exception as e:
+            print(f"密度プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"密度分布\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("密度分布（エラー）", fontsize=12, fontweight="bold")
+
+    def _create_density_plot_enhanced(self, ax, coordinates, labels):
+        """拡張版密度プロット"""
+        self._create_density_plot(ax, coordinates, labels)
+
+    def create_simple_plot_fallback(
+        self, results: Dict[str, Any], df: pd.DataFrame
+    ) -> str:
+        """フォールバック用シンプルプロット"""
+        try:
+            print("フォールバックプロット作成中...")
+
+            # 最小限のプロット
+            fig, ax = plt.subplots(figsize=(10, 8))
+            fig.patch.set_facecolor("white")
+
+            # 基本的な散布図のみ
+            labels = np.array(results["labels"])
+            pca_coordinates = np.array(results["pca_coordinates"])
+
+            unique_labels = np.unique(labels)
+            colors = plt.cm.Set3(np.linspace(0, 1, len(unique_labels)))
+
+            for i, label in enumerate(unique_labels):
+                mask = labels == label
+                ax.scatter(
+                    pca_coordinates[mask, 0],
+                    pca_coordinates[mask, 1],
+                    c=[colors[i]],
+                    label=f"クラスター {label + 1}",
+                    alpha=0.7,
+                    s=50,
+                )
+
+            ax.set_title("クラスター分析結果（簡略版）", fontsize=14, fontweight="bold")
+            ax.set_xlabel("第1主成分", fontsize=12)
+            ax.set_ylabel("第2主成分", fontsize=12)
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+
+            plt.tight_layout()
+
+            plot_base64 = self.save_plot_as_base64(fig)
+            print("フォールバックプロット完了")
+            return plot_base64
+
+        except Exception as e:
+            print(f"フォールバックプロットエラー: {e}")
+            return ""
 
     def _create_metrics_comparison_plot(self, ax, results):
         """評価指標比較プロット"""
@@ -1213,6 +1691,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     va="center",
                     transform=ax.transAxes,
                 )
+                ax.set_title("評価指標", fontsize=14, fontweight="bold")
                 return
 
             metrics_data = []
@@ -1282,11 +1761,35 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"評価指標\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("評価指標（エラー）", fontsize=14, fontweight="bold")
+
+    def _create_metrics_comparison_plot_enhanced(self, ax, results):
+        """拡張版評価指標比較プロット"""
+        self._create_metrics_comparison_plot(ax, results)
+
+    def _create_metrics_comparison_plot_safe(self, ax, results):
+        """安全版評価指標比較プロット"""
+        try:
+            self._create_metrics_comparison_plot(ax, results)
+        except Exception as e:
+            print(f"評価指標プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"評価指標\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("評価指標（エラー）", fontsize=12, fontweight="bold")
 
     def _create_density_plot(self, ax, coordinates, labels):
         """密度分布プロット（DBSCAN用）"""
@@ -1370,6 +1873,7 @@ class ClusterAnalyzer(BaseAnalyzer):
                     va="center",
                     transform=ax.transAxes,
                 )
+                ax.set_title("クラスター中心", fontsize=14, fontweight="bold")
                 return
 
             centers_array = np.array(centers)
@@ -1411,11 +1915,35 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"クラスター中心\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("クラスター中心（エラー）", fontsize=14, fontweight="bold")
+
+    def _create_cluster_centers_plot_safe(self, ax, results, df):
+        """安全版クラスター中心プロット"""
+        try:
+            self._create_cluster_centers_plot(ax, results, df)
+        except Exception as e:
+            print(f"クラスター中心プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"クラスター中心\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("クラスター中心（エラー）", fontsize=12, fontweight="bold")
+
+    def _create_cluster_centers_plot_enhanced(self, ax, results, df):
+        """拡張版クラスター中心プロット"""
+        self._create_cluster_centers_plot(ax, results, df)
 
     def _create_noise_analysis_plot(self, ax, labels, results):
         """ノイズ分析プロット（DBSCAN用）"""
@@ -1469,11 +1997,256 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"ノイズ分析\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("ノイズ分析（エラー）", fontsize=14, fontweight="bold")
+
+    def _ensure_hierarchical_has_dendrogram_data(self, results, df):
+        """階層クラスタリングのデンドログラムデータを確保"""
+        try:
+            if (
+                results.get("method") == "hierarchical"
+                and results.get("dendrogram_data") is None
+            ):
+                print("デンドログラムデータを再計算中...")
+
+                # 小さなデータセットの場合のみ再計算
+                if len(df) <= 50:
+                    from scipy.cluster.hierarchy import linkage
+                    from scipy.spatial.distance import pdist
+                    import numpy as np
+
+                    # データ準備
+                    data_array = df.select_dtypes(include=[np.number]).values.astype(
+                        np.float64
+                    )
+
+                    # リンケージ計算
+                    try:
+                        linkage_matrix = linkage(
+                            data_array, method="ward", metric="euclidean"
+                        )
+                        results["dendrogram_data"] = linkage_matrix
+                        print("デンドログラムデータ再計算完了")
+                    except Exception as e:
+                        print(f"デンドログラム再計算エラー: {e}")
+                        results["dendrogram_data"] = None
+                else:
+                    print("データが大きすぎるため、デンドログラム計算をスキップ")
+                    results["dendrogram_data"] = None
+
+        except Exception as e:
+            print(f"デンドログラムデータ確保エラー: {e}")
+            results["dendrogram_data"] = None
+
+        return results
+
+    def create_plot_with_dendrogram_fix(
+        self, results: Dict[str, Any], df: pd.DataFrame
+    ) -> str:
+        """デンドログラム対応強化版プロット作成"""
+        try:
+            print("=== デンドログラム強化版プロット作成開始 ===")
+
+            # 日本語フォント設定
+            self.setup_japanese_font()
+
+            # 階層クラスタリングの場合、デンドログラムデータを確保
+            results = self._ensure_hierarchical_has_dendrogram_data(results, df)
+
+            method = results["method"]
+            labels = np.array(results["labels"])
+            pca_coordinates = np.array(results["pca_coordinates"])
+            explained_variance_ratio = results["pca_explained_variance_ratio"]
+            n_clusters = results["n_clusters"]
+
+            print(
+                f"プロット情報: method={method}, n_clusters={n_clusters}, samples={len(labels)}"
+            )
+            print(
+                f"デンドログラムデータ有無: {'有' if results.get('dendrogram_data') is not None else '無'}"
+            )
+
+            # 手法に応じたレイアウト設定
+            if method == "hierarchical":
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_dendro = fig.add_subplot(gs[0, 1])  # デンドログラム
+                ax_elbow = fig.add_subplot(gs[1, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[0, 2])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[1, 2])  # 評価指標
+            elif method == "kmeans":
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_elbow = fig.add_subplot(gs[0, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[1, 1])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_center = fig.add_subplot(gs[1, 2])  # クラスター中心
+            else:  # DBSCAN
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_density = fig.add_subplot(gs[0, 1])  # 密度分布
+                ax_noise = fig.add_subplot(gs[1, 1])  # ノイズ分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_param = fig.add_subplot(gs[1, 2])  # パラメータ感度
+
+            # 背景設定
+            fig.patch.set_facecolor("white")
+            colors = plt.cm.Set3(np.linspace(0, 1, max(n_clusters, 3)))
+
+            # 1. メインのクラスター散布図
+            try:
+                self._create_enhanced_cluster_scatter_plot(
+                    ax_main,
+                    pca_coordinates,
+                    labels,
+                    colors,
+                    explained_variance_ratio,
+                    method,
+                    results,
+                    df,
+                )
+            except Exception as e:
+                print(f"メイン散布図エラー: {e}")
+                # フォールバック: 基本散布図
+                unique_labels = np.unique(labels)
+                for i, label in enumerate(unique_labels):
+                    mask = labels == label
+                    ax_main.scatter(
+                        pca_coordinates[mask, 0],
+                        pca_coordinates[mask, 1],
+                        label=f"クラスター {label + 1}",
+                        alpha=0.7,
+                    )
+                ax_main.set_title("クラスター分析結果", fontsize=14, fontweight="bold")
+                ax_main.legend()
+
+            # 2. 手法別の追加プロット（安全版）
+            try:
+                if method == "hierarchical":
+                    print("階層クラスタリングプロット作成中...")
+                    self._create_dendrogram_plot_safe(ax_dendro, results, df)
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+
+                elif method == "kmeans":
+                    print("K-meansプロット作成中...")
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+                    self._create_cluster_centers_plot_safe(ax_center, results, df)
+
+                else:  # DBSCAN
+                    print("DBSCANプロット作成中...")
+                    self._create_density_plot_safe(ax_density, pca_coordinates, labels)
+                    self._create_noise_analysis_plot_safe(ax_noise, labels, results)
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+                    self._create_parameter_sensitivity_plot_safe(ax_param, results)
+
+            except Exception as subplot_error:
+                print(f"サブプロット作成エラー: {subplot_error}")
+                # エラーが発生したサブプロットにエラーメッセージを表示
+                pass  # メインプロットは作成済みなので続行
+
+            # レイアウト調整
+            plt.tight_layout()
+
+            # Base64エンコード
+            plot_base64 = self.save_plot_as_base64(fig)
+            print(f"デンドログラム強化版プロット作成完了")
+            return plot_base64
+
+        except Exception as e:
+            print(f"デンドログラム強化版プロット作成エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+
+            # フォールバック: シンプルなプロットを作成
+            try:
+                return self.create_simple_plot_fallback(results, df)
+            except:
+                return ""
+
+    def test_dendrogram_capability(self, df):
+        """デンドログラム作成可能性をテスト"""
+        try:
+            print(f"デンドログラムテスト開始: サンプル数={len(df)}")
+
+            if len(df) > 100:
+                print("❌ サンプル数が多すぎます（>100）")
+                return False
+
+            if len(df) < 3:
+                print("❌ サンプル数が少なすぎます（<3）")
+                return False
+
+            from scipy.cluster.hierarchy import linkage
+            import numpy as np
+
+            # 数値データのみ選択
+            numeric_df = df.select_dtypes(include=[np.number])
+            if numeric_df.empty:
+                print("❌ 数値データがありません")
+                return False
+
+            # 小規模テスト
+            test_data = numeric_df.iloc[: min(5, len(numeric_df))].values.astype(
+                np.float64
+            )
+
+            try:
+                test_linkage = linkage(test_data, method="ward")
+                print("✅ デンドログラム作成可能")
+                return True
+            except Exception as e:
+                print(f"❌ リンケージ計算エラー: {e}")
+                return False
+
+        except Exception as e:
+            print(f"❌ デンドログラムテストエラー: {e}")
+            return False
+
+    # 12. ノイズ分析プロット（拡張版）
+    def _create_noise_analysis_plot_enhanced(self, ax, labels, results):
+        """拡張版ノイズ分析プロット"""
+        self._create_noise_analysis_plot(ax, labels, results)
+
+    def _create_noise_analysis_plot_safe(self, ax, labels, results):
+        """安全版ノイズ分析プロット"""
+        try:
+            self._create_noise_analysis_plot(ax, labels, results)
+        except Exception as e:
+            print(f"ノイズ分析プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"ノイズ分析\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("ノイズ分析（エラー）", fontsize=12, fontweight="bold")
 
     def _create_parameter_sensitivity_plot(self, ax, results):
         """パラメータ感度分析プロット（DBSCAN用）"""
@@ -1526,11 +2299,36 @@ class ClusterAnalyzer(BaseAnalyzer):
             ax.text(
                 0.5,
                 0.5,
-                f"エラー: {str(e)}",
+                f"パラメータ分析\nエラー",
                 ha="center",
                 va="center",
                 transform=ax.transAxes,
+                fontsize=12,
             )
+            ax.set_title("パラメータ分析（エラー）", fontsize=14, fontweight="bold")
+
+    # 14. パラメータ感度プロット（拡張版）
+    def _create_parameter_sensitivity_plot_enhanced(self, ax, results):
+        """拡張版パラメータ感度プロット"""
+        self._create_parameter_sensitivity_plot(ax, results)
+
+    def _create_parameter_sensitivity_plot_safe(self, ax, results):
+        """安全版パラメータ感度プロット"""
+        try:
+            self._create_parameter_sensitivity_plot(ax, results)
+        except Exception as e:
+            print(f"パラメータ感度プロットエラー: {e}")
+            ax.text(
+                0.5,
+                0.5,
+                f"パラメータ分析\nプロットエラー:\n{str(e)[:50]}...",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+                fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.5", facecolor="lightcoral", alpha=0.8),
+            )
+            ax.set_title("パラメータ分析（エラー）", fontsize=12, fontweight="bold")
 
     # 既存のcreate_plot メソッドもシンプル版として保持（後方互換性のため）
     def create_simple_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
@@ -1676,3 +2474,251 @@ class ClusterAnalyzer(BaseAnalyzer):
                 "method": results["method"],
             },
         }
+
+    # python-api/analysis/cluster.py への修正
+
+    # 1. ClusterAnalyzerクラスに具象のcreate_plotメソッドを追加
+
+    def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
+        """修正版包括プロット作成 - 抽象メソッド実装"""
+        try:
+            print("=== 包括プロット作成開始 ===")
+
+            # 日本語フォント設定
+            self.setup_japanese_font()
+
+            method = results["method"]
+            labels = np.array(results["labels"])
+            pca_coordinates = np.array(results["pca_coordinates"])
+            explained_variance_ratio = results["pca_explained_variance_ratio"]
+            n_clusters = results["n_clusters"]
+
+            print(
+                f"プロット情報: method={method}, n_clusters={n_clusters}, samples={len(labels)}"
+            )
+
+            # 手法に応じたレイアウト設定
+            if method == "hierarchical":
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_dendro = fig.add_subplot(gs[0, 1])  # デンドログラム
+                ax_elbow = fig.add_subplot(gs[1, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[0, 2])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[1, 2])  # 評価指標
+            elif method == "kmeans":
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_elbow = fig.add_subplot(gs[0, 1])  # エルボー法
+                ax_silhouette = fig.add_subplot(gs[1, 1])  # シルエット分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_center = fig.add_subplot(gs[1, 2])  # クラスター中心
+            else:  # DBSCAN
+                fig = plt.figure(figsize=(20, 12))
+                gs = fig.add_gridspec(
+                    2, 3, height_ratios=[1, 1], width_ratios=[1.5, 1, 1]
+                )
+                ax_main = fig.add_subplot(gs[:, 0])  # メイン散布図
+                ax_density = fig.add_subplot(gs[0, 1])  # 密度分布
+                ax_noise = fig.add_subplot(gs[1, 1])  # ノイズ分析
+                ax_metrics = fig.add_subplot(gs[0, 2])  # 評価指標
+                ax_param = fig.add_subplot(gs[1, 2])  # パラメータ感度
+
+            # 背景設定
+            fig.patch.set_facecolor("white")
+            colors = plt.cm.Set3(np.linspace(0, 1, max(n_clusters, 3)))
+
+            # 1. メインのクラスター散布図
+            self._create_enhanced_cluster_scatter_plot(
+                ax_main,
+                pca_coordinates,
+                labels,
+                colors,
+                explained_variance_ratio,
+                method,
+                results,
+                df,
+            )
+
+            # 2. 手法別の追加プロット（安全版）
+            try:
+                if method == "hierarchical":
+                    print("階層クラスタリングプロット作成中...")
+                    self._create_dendrogram_plot_safe(ax_dendro, results, df)
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+
+                elif method == "kmeans":
+                    print("K-meansプロット作成中...")
+                    self._create_elbow_plot_safe(ax_elbow, df, results)
+                    self._create_silhouette_analysis_plot_safe(
+                        ax_silhouette, df, labels, results
+                    )
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+                    self._create_cluster_centers_plot_safe(ax_center, results, df)
+
+                else:  # DBSCAN
+                    print("DBSCANプロット作成中...")
+                    self._create_density_plot_safe(ax_density, pca_coordinates, labels)
+                    self._create_noise_analysis_plot_safe(ax_noise, labels, results)
+                    self._create_metrics_comparison_plot_safe(ax_metrics, results)
+                    self._create_parameter_sensitivity_plot_safe(ax_param, results)
+
+            except Exception as subplot_error:
+                print(f"サブプロット作成エラー: {subplot_error}")
+                # エラーが発生したサブプロットにエラーメッセージを表示
+                pass  # メインプロットは作成済みなので続行
+
+            # レイアウト調整
+            plt.tight_layout()
+
+            # Base64エンコード
+            plot_base64 = self.save_plot_as_base64(fig)
+            print(f"包括プロット作成完了")
+            return plot_base64
+
+        except Exception as e:
+            print(f"包括プロット作成エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+
+            # フォールバック: シンプルなプロットを作成
+            try:
+                return self.create_simple_plot_fallback(results, df)
+            except:
+                return ""
+
+    # 2. 修正版階層クラスタリング（デンドログラム対応）
+    def _compute_hierarchical(
+        self, df: pd.DataFrame, n_clusters: int, **kwargs
+    ) -> Dict[str, Any]:
+        """修正版階層クラスタリング - デンドログラム安定化"""
+        linkage_method = kwargs.get("linkage", "ward")
+
+        try:
+            print(f"階層クラスタリング開始: method={linkage_method}, samples={len(df)}")
+
+            # 階層クラスタリング実行
+            from sklearn.cluster import AgglomerativeClustering
+
+            clustering = AgglomerativeClustering(
+                n_clusters=n_clusters, linkage=linkage_method
+            )
+            labels = clustering.fit_predict(df)
+            print(f"sklearn clustering完了: {len(np.unique(labels))} クラスター")
+
+            # デンドログラム用のリンケージ行列を計算
+            linkage_matrix = None
+
+            try:
+                # サンプル数チェック（100サンプル以下に制限）
+                n_samples = len(df)
+
+                if n_samples > 100:
+                    print(
+                        f"サンプル数が多すぎます({n_samples})。デンドログラム計算をスキップ。"
+                    )
+                    linkage_matrix = None
+                else:
+                    from scipy.cluster.hierarchy import linkage
+                    from scipy.spatial.distance import pdist
+                    import numpy as np
+
+                    # データ型の確認と修正
+                    data_array = df.values.astype(np.float64)
+                    print(
+                        f"データ配列形状: {data_array.shape}, dtype: {data_array.dtype}"
+                    )
+
+                    # NaNや無限値のチェック
+                    if np.any(np.isnan(data_array)) or np.any(np.isinf(data_array)):
+                        print("NaNまたは無限値を検出。データをクリーニングします。")
+                        data_array = np.nan_to_num(
+                            data_array, nan=0.0, posinf=1e10, neginf=-1e10
+                        )
+
+                    # リンケージ計算
+                    if linkage_method == "ward":
+                        print("Ward法でリンケージ計算中...")
+                        linkage_matrix = linkage(
+                            data_array, method="ward", metric="euclidean"
+                        )
+                    else:
+                        print(f"{linkage_method}法でリンケージ計算中...")
+                        # 距離行列を事前計算
+                        distances = pdist(data_array, metric="euclidean")
+
+                        # 距離に問題がないかチェック
+                        if np.any(np.isnan(distances)) or np.any(np.isinf(distances)):
+                            print(
+                                "距離計算に問題があります。ユークリッド距離を再計算します。"
+                            )
+                            distances = np.nan_to_num(
+                                distances, nan=1.0, posinf=1e10, neginf=0.0
+                            )
+
+                        linkage_matrix = linkage(distances, method=linkage_method)
+
+                    print(f"リンケージ行列計算完了: {linkage_matrix.shape}")
+
+                    # リンケージ行列の妥当性チェック
+                    if linkage_matrix is not None:
+                        if np.any(np.isnan(linkage_matrix)) or np.any(
+                            np.isinf(linkage_matrix)
+                        ):
+                            print(
+                                "リンケージ行列に無効な値があります。None に設定します。"
+                            )
+                            linkage_matrix = None
+                        elif linkage_matrix.shape[0] != n_samples - 1:
+                            print(
+                                f"リンケージ行列のサイズが不正です: {linkage_matrix.shape[0]} != {n_samples - 1}"
+                            )
+                            linkage_matrix = None
+                        else:
+                            print("リンケージ行列は正常です。")
+
+            except Exception as linkage_error:
+                print(f"リンケージ計算エラー: {linkage_error}")
+                import traceback
+
+                print(f"リンケージエラー詳細:\n{traceback.format_exc()}")
+                linkage_matrix = None
+
+            return {
+                "labels": labels,
+                "centers": None,  # 階層クラスタリングには中心点がない
+                "dendrogram_data": linkage_matrix,
+            }
+
+        except Exception as e:
+            print(f"階層クラスタリング全体エラー: {e}")
+            import traceback
+
+            print(f"階層エラー詳細:\n{traceback.format_exc()}")
+
+            # フォールバック: K-meansに切り替え
+            print("フォールバック: K-meansを使用します")
+            try:
+                from sklearn.cluster import KMeans
+
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                labels = kmeans.fit_predict(df)
+
+                return {
+                    "labels": labels,
+                    "centers": kmeans.cluster_centers_,
+                    "dendrogram_data": None,
+                }
+            except Exception as fallback_error:
+                print(f"フォールバックエラー: {fallback_error}")
+                raise
