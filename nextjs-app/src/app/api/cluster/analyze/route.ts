@@ -1,4 +1,4 @@
-//src/app/api/factor/analyze/route.ts
+//src/app/api/cluster/analyze/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 
 const PYTHON_API_URL = process.env.PYTHON_API_URL || 'http://python-api:8000';
@@ -9,13 +9,13 @@ export async function POST(request: NextRequest) {
     const searchParams = url.searchParams;
 
     // リクエストパラメータのログ出力
-    console.log('Received Factor Analysis request parameters:', {
+    console.log('Received Cluster Analysis request parameters:', {
       session_name: searchParams.get('session_name'),
       description: searchParams.get('description'),
       tags: searchParams.get('tags'),
       user_id: searchParams.get('user_id'),
-      n_factors: searchParams.get('n_factors'),
-      rotation: searchParams.get('rotation'),
+      method: searchParams.get('method'),
+      n_clusters: searchParams.get('n_clusters'),
       standardize: searchParams.get('standardize')
     });
 
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
 
     // ファイル情報のログ出力
     const fileName = file.name;
-    console.log('Factor Analysis File info:', {
+    console.log('Cluster Analysis File info:', {
       name: fileName,
       size: file.size,
       type: file.type,
@@ -40,12 +40,12 @@ export async function POST(request: NextRequest) {
     });
 
     // Python APIエンドポイントの構築
-    const pythonUrl = new URL('/api/factor/analyze', PYTHON_API_URL);
+    const pythonUrl = new URL('/api/cluster/analyze', PYTHON_API_URL);
     searchParams.forEach((value, key) => {
       pythonUrl.searchParams.append(key, value);
     });
 
-    console.log('Calling Python Factor Analysis API:', pythonUrl.toString());
+    console.log('Calling Python Cluster Analysis API:', pythonUrl.toString());
 
     // Python APIに転送するためのFormDataを作成
     const pythonFormData = new FormData();
@@ -59,7 +59,7 @@ export async function POST(request: NextRequest) {
 
     if (!pythonResponse.ok) {
       const errorData = await pythonResponse.json().catch(() => ({ detail: 'Unknown error' }));
-      console.log('Python Factor Analysis API Error:', {
+      console.log('Python Cluster Analysis API Error:', {
         status: pythonResponse.status,
         statusText: pythonResponse.statusText,
         data: errorData,
@@ -79,20 +79,20 @@ export async function POST(request: NextRequest) {
     // Python APIからのレスポンスを取得
     const responseData = await pythonResponse.json();
     
-    console.log('Factor Analysis completed successfully:', {
+    console.log('Cluster Analysis completed successfully:', {
       session_id: responseData.session_id,
       session_name: responseData.session_name,
-      has_plot: !!responseData.plot_base64,
+      has_plot: !!responseData.data?.plot_image,
       data_size: responseData.data ? Object.keys(responseData.data).length : 0
     });
 
     return NextResponse.json(responseData);
 
   } catch (error) {
-    console.error('Factor Analysis API Error:', error);
+    console.error('Cluster Analysis API Error:', error);
     return NextResponse.json(
       { 
-        error: '因子分析処理中にエラーが発生しました',
+        error: 'クラスター分析処理中にエラーが発生しました',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       { status: 500 }

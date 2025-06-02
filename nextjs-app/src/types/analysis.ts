@@ -326,7 +326,7 @@ export function isCorrespondenceResult(result: AnalysisResult): result is Corres
 }
 
 // 型安全なヘルパー型
-export type AnalysisType = 'pca' | 'correspondence' | 'factor';
+export type AnalysisType = 'pca' | 'correspondence' | 'factor'| 'cluster';
 
 export type TypeCounts = Record<string, number>;
 

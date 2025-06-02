@@ -1,3 +1,4 @@
+//src/components/AnalysisLayout.tsx
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -34,7 +35,7 @@ const analysisRoutes = [
     path: '/cluster',
     description: 'データのグループ化と分類',
     icon: '🎯',
-    status: 'development'
+    status: 'available'
   }
 ];
 

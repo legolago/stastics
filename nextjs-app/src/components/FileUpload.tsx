@@ -1,3 +1,4 @@
+//src/components/FileUpload.tsx
 import { useState, useRef, DragEvent } from 'react';
 import { FileUploadProps } from '../types/analysis';
 
