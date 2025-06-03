@@ -153,26 +153,21 @@ async def get_available_methods():
             "id": "cluster",
             "name": "クラスター解析",
             "description": "データを類似性に基づいてグループに分ける分析手法",
-            "endpoint": "/cluster/analyze",  # 修正: prefixなしのパス
+            "endpoint": "/api/cluster/analyze",  # 修正: prefixなしのパス
             "status": "available",
-            "methods_endpoint": "/cluster/methods",  # 修正: prefixなしのパス
-            "optimal_clusters_endpoint": "/cluster/optimal-clusters",  # 修正: prefixなしのパス
+            "methods_endpoint": "/api/cluster/methods",  # 修正: prefixなしのパス
+            "optimal_clusters_endpoint": "/api/cluster/optimal-clusters",  # 修正: prefixなしのパス
+        },
+        {
+            "id": "regression",
+            "name": "回帰分析",
+            "description": "目的変数と説明変数の関係をモデル化する分析手法",
+            "endpoint": "/api/regression/analyze",
+            "status": "available",
+            "parameters_endpoint": "/api/regression/parameters/validate",
+            "methods_endpoint": "/api/regression/methods",
         },
     ]
-
-    # 回帰分析が利用可能な場合は追加
-    if regression_available:
-        methods.append(
-            {
-                "id": "regression",
-                "name": "回帰分析",
-                "description": "目的変数と説明変数の関係をモデル化する分析手法",
-                "endpoint": "/api/regression/analyze",
-                "status": "available",
-                "parameters_endpoint": "/api/regression/parameters/validate",
-                "methods_endpoint": "/api/regression/methods",
-            }
-        )
 
     return {"methods": methods}
 
@@ -239,106 +234,7 @@ async def get_analysis_types():
         },
     ]
 
-    # 回帰分析が利用可能な場合は追加
-    if regression_available:
-        analysis_types.append(
-            {
-                "type": "regression",
-                "name": "回帰分析",
-                "category": "予測分析",
-                "data_type": "数値",
-                "output": "回帰係数、R²、予測値、評価指標",
-                "use_cases": [
-                    "売上予測",
-                    "価格要因分析",
-                    "影響度分析",
-                    "トレンド分析",
-                ],
-                "methods": [
-                    {
-                        "name": "linear",
-                        "display_name": "単回帰分析",
-                        "description": "一つの説明変数による線形回帰",
-                        "parameters": [
-                            "target_column",
-                            "test_size",
-                            "include_intercept",
-                        ],
-                    },
-                    {
-                        "name": "multiple",
-                        "display_name": "重回帰分析",
-                        "description": "複数の説明変数による線形回帰",
-                        "parameters": [
-                            "target_column",
-                            "test_size",
-                            "include_intercept",
-                        ],
-                    },
-                    {
-                        "name": "polynomial",
-                        "display_name": "多項式回帰",
-                        "description": "多項式による非線形回帰",
-                        "parameters": [
-                            "target_column",
-                            "polynomial_degree",
-                            "test_size",
-                            "include_intercept",
-                        ],
-                    },
-                ],
-            }
-        )
-
     return {"analysis_types": analysis_types}
-
-
-# クラスター分析専用のヘルスチェックエンドポイント
-@app.get("/cluster/health")
-async def cluster_health_check():
-    """クラスター分析機能のヘルスチェック"""
-    try:
-        from analysis.cluster import ClusterAnalyzer
-
-        analyzer = ClusterAnalyzer()
-        return {
-            "status": "healthy",
-            "analysis_type": analyzer.get_analysis_type(),
-            "available_methods": ["kmeans", "hierarchical", "dbscan"],
-            "message": "クラスター分析機能は正常に動作しています",
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"クラスター分析機能でエラーが発生しました: {str(e)}",
-        }
-
-
-# 回帰分析専用のヘルスチェックエンドポイント
-@app.get("/api/regression/health")
-async def regression_health_check():
-    """回帰分析機能のヘルスチェック"""
-    if not regression_available:
-        return {
-            "status": "unavailable",
-            "message": "回帰分析機能は利用できません",
-        }
-
-    try:
-        from analysis.regression import RegressionAnalyzer
-
-        analyzer = RegressionAnalyzer()
-        return {
-            "status": "healthy",
-            "analysis_type": analyzer.get_analysis_type(),
-            "available_methods": ["linear", "multiple", "polynomial"],
-            "message": "回帰分析機能は正常に動作しています",
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"回帰分析機能でエラーが発生しました: {str(e)}",
-        }
 
 
 if __name__ == "__main__":
