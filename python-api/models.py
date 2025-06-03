@@ -9,6 +9,11 @@ from sqlalchemy import (
     ForeignKey,
     LargeBinary,
     ARRAY,
+    JSON,
+    Float,
+    DateTime,
+    LargeBinary,
+    Boolean,
     UniqueConstraint,
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -23,6 +28,25 @@ DATABASE_URL = f"postgresql://{os.getenv('DB_USER', 'user')}:{os.getenv('DB_PASS
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+class SessionTag(Base):
+    """分析セッションのタグモデル"""
+
+    __tablename__ = "session_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        Integer, ForeignKey("analysis_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    tag = Column(String(100), nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    # リレーション
+    session = relationship("AnalysisSession", back_populates="tags")
+
+    # タグとセッションの組み合わせの一意性を保証
+    __table_args__ = (UniqueConstraint("session_id", "tag", name="uq_session_tag"),)
 
 
 class AnalysisSession(Base):
@@ -75,6 +99,9 @@ class AnalysisSession(Base):
     # 🆕 新しいリレーション
     metadata_entries = relationship(
         "AnalysisMetadata", back_populates="session", cascade="all, delete-orphan"
+    )
+    analysis_data = relationship(  # 追加：AnalysisDataとのリレーション
+        "AnalysisData", back_populates="session", cascade="all, delete-orphan"
     )
 
 
@@ -261,6 +288,28 @@ class AnalysisTypes:
     @classmethod
     def is_valid(cls, analysis_type: str):
         return analysis_type in cls.all()
+
+
+class AnalysisData(Base):
+    """分析結果データモデル"""
+
+    __tablename__ = "analysis_data"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(
+        Integer, ForeignKey("analysis_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    regression_type = Column(String)  # 回帰分析の種類
+    target_column = Column(String)  # 目的変数
+    feature_names = Column(JSON)  # 説明変数のリスト
+    coefficients = Column(JSON)  # 回帰係数
+    intercept = Column(Float)  # 切片
+    train_r2 = Column(Float)  # 訓練データのR²
+    test_r2 = Column(Float)  # テストデータのR²
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 関連付け
+    session = relationship("AnalysisSession", back_populates="analysis_data")
 
 
 # 🆕 メタデータタイプの定数
