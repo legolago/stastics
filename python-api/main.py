@@ -1,4 +1,4 @@
-# python-api/main.py の修正版
+# python-api/main.py
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +11,7 @@ matplotlib.use("Agg")
 from models import create_tables
 
 # ルーターのインポート
-from routers import correspondence, sessions, pca, factor, cluster
+from routers import correspondence, sessions, pca, factor, cluster, regression
 
 # PCAのインポート - ファイルの場所に応じて以下のいずれかを使用
 try:
@@ -29,11 +29,21 @@ except ImportError:
         pca_available = False
         print("⚠️ PCA router not found")
 
+# 回帰分析のインポート
+try:
+    from routers import regression
+
+    regression_available = True
+    print("✓ Regression router loaded from routers.regression")
+except ImportError:
+    regression_available = False
+    print("⚠️ Regression router not found")
+
 # FastAPIアプリケーションを作成
 app = FastAPI(
     title="多変量解析API",
     version="2.0.0",
-    description="コレスポンデンス分析、主成分分析、因子分析、クラスター分析などの多変量解析を提供するAPI",
+    description="コレスポンデンス分析、主成分分析、因子分析、クラスター分析、回帰分析などの多変量解析を提供するAPI",
 )
 
 # データベーステーブルを作成
@@ -57,6 +67,13 @@ app.include_router(factor.router, prefix="/api")  # 因子分析ルーターを�
 # クラスター解析ルーターを登録（prefixなしで直接登録）
 app.include_router(cluster.router)  # cluster.routerは内部で "/cluster" パスを持っている
 print("✓ Cluster analysis router registered")
+
+# 回帰分析ルーターを登録
+if regression_available:
+    app.include_router(regression.router, prefix="/api")
+    print("✓ Regression analysis router registered at /api/regression")
+else:
+    print("⚠️ Regression router not registered - file not found")
 
 # デバッグ用：登録されているルートを確認
 print("=== 登録されているルート一覧 ===")
@@ -84,6 +101,7 @@ async def root():
             "pca" if pca_available else None,
             "factor",
             "cluster",  # クラスター分析を追加
+            "regression" if regression_available else None,  # 回帰分析を追加
         ],
     }
 
@@ -91,10 +109,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     """ヘルスチェック"""
+    available_methods = ["correspondence", "pca", "factor", "cluster"]
+    if regression_available:
+        available_methods.append("regression")
+
     return {
         "status": "healthy",
         "version": "2.1.0",
-        "available_methods": ["correspondence", "pca", "factor", "cluster"],
+        "available_methods": available_methods,
     }
 
 
@@ -138,72 +160,137 @@ async def get_available_methods():
         },
     ]
 
+    # 回帰分析が利用可能な場合は追加
+    if regression_available:
+        methods.append(
+            {
+                "id": "regression",
+                "name": "回帰分析",
+                "description": "目的変数と説明変数の関係をモデル化する分析手法",
+                "endpoint": "/api/regression/analyze",
+                "status": "available",
+                "parameters_endpoint": "/api/regression/parameters/validate",
+                "methods_endpoint": "/api/regression/methods",
+            }
+        )
+
     return {"methods": methods}
 
 
 @app.get("/api/analysis-types")
 async def get_analysis_types():
     """分析手法の詳細情報を取得"""
-    return {
-        "analysis_types": [
+    analysis_types = [
+        {
+            "type": "correspondence",
+            "name": "コレスポンデンス分析",
+            "category": "関係性分析",
+            "data_type": "カテゴリカル",
+            "output": "散布図、寄与率",
+            "use_cases": ["ブランドとイメージの関係", "商品とターゲットの分析"],
+        },
+        {
+            "type": "pca",
+            "name": "主成分分析",
+            "category": "次元削減",
+            "data_type": "数値",
+            "output": "主成分得点、負荷量、寄与率",
+            "use_cases": ["データの可視化", "次元削減", "特徴抽出"],
+        },
+        {
+            "type": "factor",
+            "name": "因子分析",
+            "category": "潜在変数分析",
+            "data_type": "数値",
+            "output": "因子負荷量、因子得点、共通性",
+            "use_cases": ["心理測定", "アンケート分析", "潜在因子の発見"],
+        },
+        {
+            "type": "cluster",
+            "name": "クラスター解析",
+            "category": "分類分析",
+            "data_type": "数値",
+            "output": "クラスター所属、評価指標、可視化",
+            "use_cases": [
+                "顧客セグメンテーション",
+                "商品分類",
+                "市場セグメント分析",
+            ],
+            "methods": [
+                {
+                    "name": "kmeans",
+                    "display_name": "K-means法",
+                    "description": "事前にクラスター数を指定する代表的な手法",
+                    "parameters": ["n_clusters", "standardize"],
+                },
+                {
+                    "name": "hierarchical",
+                    "display_name": "階層クラスタリング",
+                    "description": "階層的にクラスターを形成し、デンドログラムで可視化",
+                    "parameters": ["n_clusters", "linkage", "standardize"],
+                },
+                {
+                    "name": "dbscan",
+                    "display_name": "DBSCAN法",
+                    "description": "密度ベースの手法で、クラスター数を事前に指定不要",
+                    "parameters": ["eps", "min_samples", "standardize"],
+                },
+            ],
+        },
+    ]
+
+    # 回帰分析が利用可能な場合は追加
+    if regression_available:
+        analysis_types.append(
             {
-                "type": "correspondence",
-                "name": "コレスポンデンス分析",
-                "category": "関係性分析",
-                "data_type": "カテゴリカル",
-                "output": "散布図、寄与率",
-                "use_cases": ["ブランドとイメージの関係", "商品とターゲットの分析"],
-            },
-            {
-                "type": "pca",
-                "name": "主成分分析",
-                "category": "次元削減",
+                "type": "regression",
+                "name": "回帰分析",
+                "category": "予測分析",
                 "data_type": "数値",
-                "output": "主成分得点、負荷量、寄与率",
-                "use_cases": ["データの可視化", "次元削減", "特徴抽出"],
-            },
-            {
-                "type": "factor",
-                "name": "因子分析",
-                "category": "潜在変数分析",
-                "data_type": "数値",
-                "output": "因子負荷量、因子得点、共通性",
-                "use_cases": ["心理測定", "アンケート分析", "潜在因子の発見"],
-            },
-            {
-                "type": "cluster",
-                "name": "クラスター解析",
-                "category": "分類分析",
-                "data_type": "数値",
-                "output": "クラスター所属、評価指標、可視化",
+                "output": "回帰係数、R²、予測値、評価指標",
                 "use_cases": [
-                    "顧客セグメンテーション",
-                    "商品分類",
-                    "市場セグメント分析",
+                    "売上予測",
+                    "価格要因分析",
+                    "影響度分析",
+                    "トレンド分析",
                 ],
                 "methods": [
                     {
-                        "name": "kmeans",
-                        "display_name": "K-means法",
-                        "description": "事前にクラスター数を指定する代表的な手法",
-                        "parameters": ["n_clusters", "standardize"],
+                        "name": "linear",
+                        "display_name": "単回帰分析",
+                        "description": "一つの説明変数による線形回帰",
+                        "parameters": [
+                            "target_column",
+                            "test_size",
+                            "include_intercept",
+                        ],
                     },
                     {
-                        "name": "hierarchical",
-                        "display_name": "階層クラスタリング",
-                        "description": "階層的にクラスターを形成し、デンドログラムで可視化",
-                        "parameters": ["n_clusters", "linkage", "standardize"],
+                        "name": "multiple",
+                        "display_name": "重回帰分析",
+                        "description": "複数の説明変数による線形回帰",
+                        "parameters": [
+                            "target_column",
+                            "test_size",
+                            "include_intercept",
+                        ],
                     },
                     {
-                        "name": "dbscan",
-                        "display_name": "DBSCAN法",
-                        "description": "密度ベースの手法で、クラスター数を事前に指定不要",
-                        "parameters": ["eps", "min_samples", "standardize"],
+                        "name": "polynomial",
+                        "display_name": "多項式回帰",
+                        "description": "多項式による非線形回帰",
+                        "parameters": [
+                            "target_column",
+                            "polynomial_degree",
+                            "test_size",
+                            "include_intercept",
+                        ],
                     },
                 ],
-            },
-        ]
-    }
+            }
+        )
+
+    return {"analysis_types": analysis_types}
 
 
 # クラスター分析専用のヘルスチェックエンドポイント
@@ -224,6 +311,33 @@ async def cluster_health_check():
         return {
             "status": "error",
             "message": f"クラスター分析機能でエラーが発生しました: {str(e)}",
+        }
+
+
+# 回帰分析専用のヘルスチェックエンドポイント
+@app.get("/api/regression/health")
+async def regression_health_check():
+    """回帰分析機能のヘルスチェック"""
+    if not regression_available:
+        return {
+            "status": "unavailable",
+            "message": "回帰分析機能は利用できません",
+        }
+
+    try:
+        from analysis.regression import RegressionAnalyzer
+
+        analyzer = RegressionAnalyzer()
+        return {
+            "status": "healthy",
+            "analysis_type": analyzer.get_analysis_type(),
+            "available_methods": ["linear", "multiple", "polynomial"],
+            "message": "回帰分析機能は正常に動作しています",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"回帰分析機能でエラーが発生しました: {str(e)}",
         }
 
 

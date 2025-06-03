@@ -36,6 +36,14 @@ const analysisRoutes = [
     description: 'データのグループ化と分類',
     icon: '🎯',
     status: 'available'
+  },
+  {
+    id: 'regression',
+    name: '回帰分析',
+    path: '/regression',
+    description: '目的変数と説明変数の関係をモデル化',
+    icon: '📈',
+    status: 'available'
   }
 ];
 

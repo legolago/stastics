@@ -1,4 +1,7 @@
-// types/analysis.ts
+// types/analysis.ts - 修正版
+
+// 基本的な分析タイプ
+export type AnalysisType = 'pca' | 'correspondence' | 'factor' | 'cluster' | 'regression';
 
 // 基本的な分析セッション情報
 export interface AnalysisSession {
@@ -8,13 +11,12 @@ export interface AnalysisSession {
   description?: string;
   tags: string[];
   analysis_timestamp: string;
-  analysis_type: string;
-  total_inertia?: number;
+  analysis_type: AnalysisType;
+  total_inertia?: number; // 各分析で異なる意味で使用（PCA: 寄与率、Correspondence: 総慣性、Regression: R²値）
   dimension_1_contribution?: number;
   dimension_2_contribution?: number;
   row_count: number;
   column_count: number;
-  // PCA用のプロパティを追加
   chi2_value?: number; // コレスポンデンス分析ではカイ二乗値、PCAではKMO値として使用
   degrees_of_freedom?: number; // コレスポンデンス分析では自由度、PCAでは主成分数として使用
 }
@@ -28,6 +30,15 @@ export interface CorrespondenceParams {
 export interface PCAParams {
   n_components: number;
   standardize: boolean;
+}
+
+// 回帰分析のパラメータ
+export interface RegressionParams {
+  target_column: string;
+  regression_type: 'linear' | 'multiple' | 'polynomial';
+  polynomial_degree: number;
+  test_size: number;
+  include_intercept: boolean;
 }
 
 // 座標データ
@@ -63,16 +74,23 @@ export interface BaseAnalysisData {
   plot_image: string;
 }
 
-// 分析データ（Python APIからの詳細レスポンス）
+// 分析データ（Python APIからの詳細レスポンス）- 統合版
 export interface AnalysisData {
+  // 共通プロパティ
   total_inertia?: number;
+  n_components?: number;
+  plot_image?: string;
+  
+  // コレスポンデンス分析用
   chi2?: number;
   degrees_of_freedom?: number;
   dimensions_count?: number;
   eigenvalues?: EigenvalueInfo[];
+  explained_inertia?: number[];
+  cumulative_inertia?: number[];
   coordinates?: CoordinatesData;
-  // PCA用のプロパティ
-  n_components?: number;
+  
+  // PCA分析用
   n_samples?: number;
   n_features?: number;
   standardized?: boolean;
@@ -81,6 +99,21 @@ export interface AnalysisData {
   kmo?: number;
   determinant?: number;
   pca_coordinates?: PCACoordinatesData;
+  
+  // 回帰分析用
+  regression_type?: string;
+  target_column?: string;
+  feature_names?: string[];
+  coefficients?: number[];
+  intercept?: number;
+  best_feature?: string;
+  polynomial_degree?: number;
+  train_r2?: number;
+  test_r2?: number;
+  train_rmse?: number;
+  test_rmse?: number;
+  train_mae?: number;
+  test_mae?: number;
 }
 
 // 可視化データ
@@ -104,11 +137,16 @@ export interface SessionInfo {
   user_id?: string;
 }
 
-// メタデータ
+// メタデータ - 統合版
 export interface MetaData {
   row_count: number;
   column_count: number;
   file_size?: number;
+  // 回帰分析用追加
+  n_samples?: number;
+  n_features?: number;
+  test_size?: number;
+  include_intercept?: boolean;
 }
 
 // Python APIからのセッション詳細レスポンス
@@ -148,6 +186,27 @@ export interface PCAAnalysisData extends BaseAnalysisData {
   coordinates: PCACoordinatesData;
 }
 
+// 🔧 回帰分析の結果データ（BaseAnalysisDataを継承）
+export interface RegressionAnalysisData extends BaseAnalysisData {
+  regression_type: string;
+  target_column: string;
+  feature_names: string[];
+  coefficients: number[];
+  intercept: number;
+  best_feature?: string;
+  polynomial_degree?: number;
+  train_r2: number;
+  test_r2: number;
+  train_rmse: number;
+  test_rmse: number;
+  train_mae: number;
+  test_mae: number;
+  coordinates: any[]; // 回帰分析では使用しないが互換性のため
+  total_inertia: number; // R²値として使用
+  explained_inertia: number[]; // 互換性のため
+  cumulative_inertia: number[]; // 互換性のため
+}
+
 // コレスポンデンス分析のメタデータ
 export interface AnalysisMetadata {
   session_name?: string;
@@ -168,6 +227,18 @@ export interface PCAMetadata {
   feature_names: string[];
 }
 
+// 回帰分析のメタデータ
+export interface RegressionMetadata {
+  session_name: string;
+  filename: string;
+  rows: number;
+  columns: number;
+  n_samples: number;
+  n_features: number;
+  test_size: number;
+  include_intercept: boolean;
+}
+
 // セッション情報（簡略版）
 export interface AnalysisSessionInfo {
   session_id: number;
@@ -176,7 +247,7 @@ export interface AnalysisSessionInfo {
   tags: string[];
   analysis_timestamp: string;
   filename: string;
-  analysis_type: string;
+  analysis_type: AnalysisType;
   row_count: number;
   column_count: number;
 }
@@ -204,8 +275,15 @@ export interface PCAAnalysisResult extends BaseAnalysisResult {
   metadata: PCAMetadata;
 }
 
+// 🔧 回帰分析の結果（型安全性向上）
+export interface RegressionAnalysisResult extends BaseAnalysisResult {
+  analysis_type: 'regression';
+  data: RegressionAnalysisData;
+  metadata: RegressionMetadata;
+}
+
 // 🔧 汎用的な分析結果型（ユニオン型に修正）
-export type AnalysisResult = CorrespondenceAnalysisResult | PCAAnalysisResult;
+export type AnalysisResult = CorrespondenceAnalysisResult | PCAAnalysisResult | RegressionAnalysisResult;
 
 // APIエラーレスポンス
 export interface ApiErrorResponse {
@@ -278,6 +356,9 @@ export interface AnalyzeResponse extends CorrespondenceAnalysisResult {}
 // PCA分析実行のレスポンス
 export interface PCAAnalyzeResponse extends PCAAnalysisResult {}
 
+// 回帰分析実行のレスポンス
+export interface RegressionAnalyzeResponse extends RegressionAnalysisResult {}
+
 // ファイルアップロードの設定
 export interface FileUploadConfig {
   accept: string;
@@ -303,6 +384,15 @@ export interface PCAAnalysisConfig {
   parameters: PCAParams;
 }
 
+// 回帰分析設定
+export interface RegressionAnalysisConfig {
+  session_name: string;
+  description?: string;
+  tags?: string;
+  user_id?: string;
+  parameters: RegressionParams;
+}
+
 // 🔧 型ガード関数（修正版）
 export function isPCASession(session: AnalysisSession): session is AnalysisSession & { analysis_type: 'pca' } {
   return session.analysis_type === 'pca';
@@ -316,6 +406,10 @@ export function isFactorSession(session: AnalysisSession): session is AnalysisSe
   return session.analysis_type === 'factor';
 }
 
+export function isRegressionSession(session: AnalysisSession): session is AnalysisSession & { analysis_type: 'regression' } {
+  return session.analysis_type === 'regression';
+}
+
 // 🔧 分析結果の型ガード関数（修正版）
 export function isPCAResult(result: AnalysisResult): result is PCAAnalysisResult {
   return result.analysis_type === 'pca';
@@ -325,9 +419,11 @@ export function isCorrespondenceResult(result: AnalysisResult): result is Corres
   return result.analysis_type === 'correspondence';
 }
 
-// 型安全なヘルパー型
-export type AnalysisType = 'pca' | 'correspondence' | 'factor'| 'cluster';
+export function isRegressionResult(result: AnalysisResult): result is RegressionAnalysisResult {
+  return result.analysis_type === 'regression';
+}
 
+// 型安全なヘルパー型
 export type TypeCounts = Record<string, number>;
 
 // PCAセッション特化型
@@ -351,6 +447,12 @@ export interface FactorSession extends AnalysisSession {
   degrees_of_freedom?: number; // 因子数
 }
 
+// 回帰分析セッション特化型
+export interface RegressionSession extends AnalysisSession {
+  analysis_type: 'regression';
+  total_inertia?: number; // R²値
+}
+
 // イベントハンドラー用の型
 export type SessionClickHandler = (sessionId: number) => void;
 export type SessionDeleteHandler = (sessionId: number) => Promise<void>;
@@ -371,6 +473,10 @@ export interface PCAFormData extends AnalysisFormData {
 
 export interface CorrespondenceFormData extends AnalysisFormData {
   parameters: CorrespondenceParams;
+}
+
+export interface RegressionFormData extends AnalysisFormData {
+  parameters: RegressionParams;
 }
 
 // コンポーネントProps用の型
@@ -420,6 +526,17 @@ export interface CorrespondencePageState {
   parameters: CorrespondenceParams;
 }
 
+export interface RegressionPageState {
+  sessions: AnalysisSession[];
+  sessionsLoading: boolean;
+  result: RegressionAnalysisResult | null;
+  error: string | null;
+  loading: boolean;
+  activeTab: 'upload' | 'history';
+  searchQuery: string;
+  parameters: RegressionParams;
+}
+
 // API呼び出し用の型
 export interface FetchSessionsParams {
   userId?: string;
@@ -437,6 +554,12 @@ export interface AnalysisRequestParams {
   user_id?: string;
   n_components?: number;
   standardize?: boolean; // PCA用
+  // 回帰分析用
+  target_column?: string;
+  regression_type?: string;
+  polynomial_degree?: number;
+  test_size?: number;
+  include_intercept?: boolean;
 }
 
 // 🔧 型安全なダウンロード関数の型
@@ -446,3 +569,5 @@ export type AnalysisResultDownloadHandler = (result: AnalysisResult) => Promise<
 // 🔧 分析特化型のダウンロードハンドラー
 export type PCADownloadHandler = (result: PCAAnalysisResult) => Promise<void>;
 export type CorrespondenceDownloadHandler = (result: CorrespondenceAnalysisResult) => Promise<void>;
+export type RegressionDownloadHandler = (result: RegressionAnalysisResult) => Promise<void>;
+

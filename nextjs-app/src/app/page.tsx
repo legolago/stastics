@@ -77,7 +77,7 @@ export default function StatisticsHomePage() {
       id: 'regression',
       name: '回帰分析',
       description: '変数間の関係性をモデル化し、予測や要因分析を行います',
-      status: 'disabled',
+      status: 'available',
       path: '/regression',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -87,8 +87,8 @@ export default function StatisticsHomePage() {
       features: ['線形回帰', '重回帰', '残差分析', '予測区間']
     },
     {
-      id: 'timeseries',
-      name: '時系列分析',
+      id: 'rfm',
+      name: 'RFM分析',
       description: '時間軸に沿ったデータの傾向、季節性、周期性を分析します',
       status: 'disabled',
       path: '/timeseries',
