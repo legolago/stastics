@@ -1,19 +1,25 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, Path
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
-from typing import Optional
+from sqlalchemy import desc
+from typing import Optional, List
 import pandas as pd
 import io
 import os
 import base64
+import json
+
 from models import (
+    get_db,
     AnalysisSession,
     OriginalData,
     CoordinatesData,
     VisualizationData,
     EigenvalueData,
     AnalysisMetadata,
-    get_db,
+    get_sessions_by_analysis_type,
+    get_analysis_summary_stats,
+    AnalysisTypes,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -33,10 +39,13 @@ async def get_analysis_sessions(
     try:
         query = db.query(AnalysisSession).filter(AnalysisSession.user_id == user_id)
 
-        # 分析タイプでフィルター（新機能）
+        # 分析タイプでフィルター
         if analysis_type:
-            query = query.filter(AnalysisSession.analysis_type == analysis_type)
-            print(f"Filtering by analysis_type: {analysis_type}")
+            if AnalysisTypes.is_valid(analysis_type):
+                query = query.filter(AnalysisSession.analysis_type == analysis_type)
+                print(f"Filtering by analysis_type: {analysis_type}")
+            else:
+                raise HTTPException(status_code=400, detail="無効な分析手法です")
 
         # 検索キーワードでフィルター
         if search:
@@ -94,6 +103,45 @@ async def get_analysis_sessions(
                 "row_count": session.row_count,
                 "column_count": session.column_count,
             }
+
+            # 分析手法別の追加情報
+            if session.analysis_type == "correspondence":
+                session_data.update(
+                    {
+                        "chi2_value": (
+                            float(session.chi2_value) if session.chi2_value else 0.0
+                        ),
+                        "degrees_of_freedom": session.degrees_of_freedom,
+                    }
+                )
+            elif session.analysis_type == "pca":
+                session_data.update(
+                    {
+                        "kmo_value": (
+                            float(session.chi2_value) if session.chi2_value else 0.0
+                        ),  # KMO値をchi2_valueに保存
+                        "n_components": session.degrees_of_freedom,  # 主成分数をdegrees_of_freedomに保存
+                    }
+                )
+            elif session.analysis_type == "cluster":
+                session_data.update(
+                    {
+                        "n_clusters": session.degrees_of_freedom,  # クラスター数をdegrees_of_freedomに保存
+                        "evaluation_score": (
+                            float(session.chi2_value) if session.chi2_value else 0.0
+                        ),  # 評価指標をchi2_valueに保存
+                    }
+                )
+            elif session.analysis_type == "factor":
+                session_data.update(
+                    {
+                        "n_factors": session.degrees_of_freedom,
+                        "total_variance_explained": (
+                            float(session.chi2_value) if session.chi2_value else 0.0
+                        ),
+                    }
+                )
+
             results.append(session_data)
 
         return {
@@ -107,6 +155,8 @@ async def get_analysis_sessions(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Sessions API Error: {str(e)}")
         import traceback
@@ -115,6 +165,18 @@ async def get_analysis_sessions(
 
         raise HTTPException(
             status_code=500, detail=f"データ取得中にエラーが発生しました: {str(e)}"
+        )
+
+
+@router.get("/stats")
+async def get_session_stats(db: Session = Depends(get_db)):
+    """分析手法別の統計情報を取得"""
+    try:
+        stats = get_analysis_summary_stats(db)
+        return {"statistics": stats}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"統計情報取得中にエラーが発生しました: {str(e)}"
         )
 
 
@@ -273,27 +335,22 @@ async def get_analysis_session(
             .first()
         )
 
-        # 因子分析特有のメタデータを取得
-        factor_metadata = None
-        if analysis_type == "factor":
-            try:
-                factor_metadata = (
-                    db.query(AnalysisMetadata)
-                    .filter(AnalysisMetadata.session_id == session_id)
-                    .all()
-                )
-                print(
-                    f"Found {len(factor_metadata) if factor_metadata else 0} factor metadata records"
-                )
-            except Exception as meta_error:
-                print(f"Could not load factor metadata: {meta_error}")
-                factor_metadata = None
+        # メタデータを取得
+        metadata_entries = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
+        metadata_dict = {}
+
+        for metadata in metadata_entries:
+            metadata_dict[metadata.metadata_type] = metadata.metadata_content
 
         # 座標データを整理
         row_coords = []
         col_coords = []
-        variable_coords = []  # 因子分析用
-        observation_coords = []  # 因子分析用
+        variable_coords = []  # PCA・因子分析用
+        observation_coords = []  # PCA・因子分析・クラスター分析用
 
         for coord in coordinates:
             coord_data = {
@@ -308,9 +365,9 @@ async def get_analysis_session(
                 row_coords.append(coord_data)
             elif point_type == "column":
                 col_coords.append(coord_data)
-            elif point_type == "variable":  # 因子分析用
+            elif point_type == "variable":
                 variable_coords.append(coord_data)
-            elif point_type == "observation":  # 因子分析用
+            elif point_type == "observation":
                 observation_coords.append(coord_data)
             else:
                 # フォールバック: インデックスで判定
@@ -342,14 +399,6 @@ async def get_analysis_session(
                 }
             )
 
-        # 因子分析特有のデータ構造
-        factor_analysis_data = {}
-        if analysis_type == "factor" and factor_metadata:
-            for metadata in factor_metadata:
-                metadata_type = getattr(metadata, "metadata_type", "")
-                metadata_content = getattr(metadata, "metadata_content", {})
-                factor_analysis_data[metadata_type] = metadata_content
-
         result = {
             "success": True,
             "session_info": {
@@ -377,14 +426,11 @@ async def get_analysis_session(
                 "coordinates": {
                     "rows": row_coords,
                     "columns": col_coords,
-                    # 因子分析用の座標データ
                     "variables": variable_coords,
                     "observations": observation_coords,
                 },
-                # 因子分析特有のデータ
-                "factor_data": (
-                    factor_analysis_data if analysis_type == "factor" else None
-                ),
+                # 分析手法固有のデータ
+                "metadata": metadata_dict,
             },
             "metadata": {
                 "row_count": session.row_count,
@@ -437,6 +483,112 @@ async def get_analysis_session(
         )
 
 
+@router.get("/analysis-types")
+async def get_analysis_types():
+    """利用可能な分析手法一覧を取得"""
+    return {
+        "analysis_types": [
+            {
+                "id": AnalysisTypes.CORRESPONDENCE,
+                "name": "コレスポンデンス分析",
+                "description": "カテゴリカルデータの関係性を可視化",
+            },
+            {
+                "id": AnalysisTypes.PCA,
+                "name": "主成分分析",
+                "description": "多次元データの次元削減と可視化",
+            },
+            {
+                "id": AnalysisTypes.FACTOR,
+                "name": "因子分析",
+                "description": "潜在的な因子構造を発見",
+            },
+            {
+                "id": AnalysisTypes.CLUSTER,
+                "name": "クラスター分析",
+                "description": "データをグループに分類",
+            },
+        ]
+    }
+
+
+@router.put("/{session_id}")
+async def update_session(
+    session_id: int,
+    session_name: Optional[str] = None,
+    description: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    db: Session = Depends(get_db),
+):
+    """セッション情報を更新"""
+    try:
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        # 更新
+        if session_name is not None:
+            session.session_name = session_name
+        if description is not None:
+            session.description = description
+        if tags is not None:
+            session.tags = tags
+
+        db.commit()
+
+        return {
+            "message": f"セッション {session_id} を更新しました",
+            "session": {
+                "id": session.id,
+                "session_name": session.session_name,
+                "description": session.description,
+                "tags": session.tags,
+            },
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail=f"セッション更新中にエラーが発生しました: {str(e)}"
+        )
+
+
+@router.get("/{session_id}/original-data")
+async def get_original_data(session_id: int, db: Session = Depends(get_db)):
+    """元データを取得"""
+    try:
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        original_data = (
+            db.query(OriginalData).filter(OriginalData.session_id == session_id).first()
+        )
+        if not original_data:
+            raise HTTPException(status_code=404, detail="元データが見つかりません")
+
+        return {
+            "session_id": session_id,
+            "csv_data": original_data.csv_data,
+            "row_names": original_data.row_names,
+            "column_names": original_data.column_names,
+            "data_matrix": original_data.data_matrix,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"元データ取得中にエラーが発生しました: {str(e)}"
+        )
+
+
 @router.get("/{session_id}/csv")
 async def download_original_csv(
     session_id: int = Path(..., description="セッションID"),
@@ -463,10 +615,6 @@ async def download_original_csv(
             raise HTTPException(status_code=404, detail="元のCSVデータが見つかりません")
 
         print(f"Original data found, checking attributes...")
-        available_attrs = [
-            attr for attr in dir(original_data) if not attr.startswith("_")
-        ]
-        print(f"Available attributes: {available_attrs}")
 
         # CSVデータを安全に取得
         csv_content = None
@@ -565,10 +713,6 @@ async def download_plot_image(
             raise HTTPException(status_code=404, detail="プロット画像が見つかりません")
 
         print(f"Visualization data found, checking attributes...")
-        available_attrs = [
-            attr for attr in dir(visualization_data) if not attr.startswith("_")
-        ]
-        print(f"Available attributes: {available_attrs}")
 
         # 画像データを安全に取得
         image_data = None
@@ -591,29 +735,6 @@ async def download_plot_image(
                 print("Successfully decoded base64 image data")
             except Exception as decode_error:
                 print(f"Base64 decode error: {decode_error}")
-        # 3. その他の属性名パターン
-        else:
-            for attr_name in [
-                "plot_image",
-                "plot_data",
-                "visualization_data",
-                "plot_base64",
-            ]:
-                if hasattr(visualization_data, attr_name):
-                    attr_value = getattr(visualization_data, attr_name)
-                    if attr_value:
-                        print(f"Found image data in attribute: {attr_name}")
-                        if isinstance(attr_value, str):
-                            try:
-                                if attr_value.startswith("data:image/"):
-                                    attr_value = attr_value.split(",")[1]
-                                image_data = base64.b64decode(attr_value)
-                                break
-                            except:
-                                continue
-                        else:
-                            image_data = attr_value
-                            break
 
         if not image_data:
             raise HTTPException(status_code=404, detail="画像データが見つかりません")
@@ -675,34 +796,28 @@ async def download_analysis_results_csv(
             .all()
         )
 
-        # 因子分析の場合はメタデータも取得
-        factor_metadata = None
-        if analysis_type == "factor":
-            try:
-                factor_metadata = (
-                    db.query(AnalysisMetadata)
-                    .filter(AnalysisMetadata.session_id == session_id)
-                    .all()
-                )
-                print(
-                    f"Found {len(factor_metadata) if factor_metadata else 0} factor metadata records"
-                )
-            except Exception as meta_error:
-                print(f"Could not load factor metadata: {meta_error}")
+        # メタデータを取得
+        metadata_entries = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
 
         print(f"Found {len(coordinates_data)} coordinate records")
         print(f"Found {len(eigenvalue_data)} eigenvalue records")
+        print(f"Found {len(metadata_entries)} metadata records")
 
         output = io.StringIO()
 
         # ヘッダー情報
-        if analysis_type == "factor":
-            output.write("因子分析結果\n")
-        elif analysis_type == "pca":
-            output.write("主成分分析結果\n")
-        else:
-            output.write("コレスポンデンス分析結果\n")
+        analysis_names = {
+            "factor": "因子分析結果",
+            "pca": "主成分分析結果",
+            "cluster": "クラスター分析結果",
+            "correspondence": "コレスポンデンス分析結果",
+        }
 
+        output.write(f"{analysis_names.get(analysis_type, 'データ分析結果')}\n")
         output.write(f"セッション名,{session.session_name}\n")
         output.write(f"ファイル名,{getattr(session, 'original_filename', 'unknown')}\n")
         output.write(
@@ -718,24 +833,55 @@ async def download_analysis_results_csv(
                 output.write(f"総慣性,{session.total_inertia:.6f}\n")
 
         if hasattr(session, "chi2_value") and getattr(session, "chi2_value", None):
-            output.write(f"カイ二乗値,{session.chi2_value:.6f}\n")
+            if analysis_type == "correspondence":
+                output.write(f"カイ二乗値,{session.chi2_value:.6f}\n")
+            elif analysis_type == "pca":
+                output.write(f"KMO値,{session.chi2_value:.6f}\n")
+            elif analysis_type == "cluster":
+                output.write(f"シルエットスコア,{session.chi2_value:.6f}\n")
+            elif analysis_type == "factor":
+                output.write(f"総分散説明率,{session.chi2_value:.6f}\n")
+
         if hasattr(session, "degrees_of_freedom") and getattr(
             session, "degrees_of_freedom", None
         ):
-            output.write(f"自由度,{session.degrees_of_freedom}\n")
+            if analysis_type == "correspondence":
+                output.write(f"自由度,{session.degrees_of_freedom}\n")
+            elif analysis_type == "pca":
+                output.write(f"主成分数,{session.degrees_of_freedom}\n")
+            elif analysis_type == "cluster":
+                output.write(f"クラスター数,{session.degrees_of_freedom}\n")
+            elif analysis_type == "factor":
+                output.write(f"因子数,{session.degrees_of_freedom}\n")
         output.write("\n")
 
         # 固有値データのセクション
         if eigenvalue_data:
-            if analysis_type == "factor":
-                output.write("因子別情報\n")
-                output.write("因子,固有値,寄与率(%),累積寄与率(%)\n")
-            elif analysis_type == "pca":
-                output.write("主成分別情報\n")
-                output.write("主成分,固有値,寄与率(%),累積寄与率(%)\n")
-            else:
-                output.write("次元別情報\n")
-                output.write("次元,固有値,寄与率(%),累積寄与率(%)\n")
+            dimension_labels = {
+                "factor": ("因子別情報", "因子,固有値,寄与率(%),累積寄与率(%)", "因子"),
+                "pca": (
+                    "主成分別情報",
+                    "主成分,固有値,寄与率(%),累積寄与率(%)",
+                    "第{0}主成分",
+                ),
+                "cluster": (
+                    "クラスター別情報",
+                    "クラスター,慣性,寄与率(%),累積寄与率(%)",
+                    "クラスター",
+                ),
+                "correspondence": (
+                    "次元別情報",
+                    "次元,固有値,寄与率(%),累積寄与率(%)",
+                    "第{0}次元",
+                ),
+            }
+
+            section_title, header_row, label_format = dimension_labels.get(
+                analysis_type, dimension_labels["correspondence"]
+            )
+
+            output.write(f"{section_title}\n")
+            output.write(f"{header_row}\n")
 
             eigenvalue_data_sorted = sorted(
                 eigenvalue_data, key=lambda x: x.dimension_number
@@ -751,6 +897,8 @@ async def download_analysis_results_csv(
                     label = f"因子{ev.dimension_number}"
                 elif analysis_type == "pca":
                     label = f"第{ev.dimension_number}主成分"
+                elif analysis_type == "cluster":
+                    label = f"クラスター{ev.dimension_number}"
                 else:
                     label = f"第{ev.dimension_number}次元"
 
@@ -759,15 +907,13 @@ async def download_analysis_results_csv(
                 )
             output.write("\n")
 
-        # 因子分析特有のメタデータ出力
-        if analysis_type == "factor" and factor_metadata:
-            for metadata in factor_metadata:
+        # 分析手法固有のメタデータ出力
+        if metadata_entries:
+            for metadata in metadata_entries:
                 metadata_type = getattr(metadata, "metadata_type", "")
                 metadata_content = getattr(metadata, "metadata_content", {})
 
-                if metadata_type == "factor_loadings" and isinstance(
-                    metadata_content, dict
-                ):
+                if analysis_type == "factor" and metadata_type == "factor_loadings":
                     output.write("因子負荷量\n")
                     loadings = metadata_content.get("loadings", [])
                     feature_names = metadata_content.get("feature_names", [])
@@ -796,13 +942,37 @@ async def download_analysis_results_csv(
                             )
                     output.write("\n")
 
+                elif (
+                    analysis_type == "cluster" and metadata_type == "cluster_statistics"
+                ):
+                    output.write("クラスター統計情報\n")
+                    for cluster_key, cluster_info in metadata_content.items():
+                        output.write(
+                            f"\n{cluster_key} (サイズ: {cluster_info['size']})\n"
+                        )
+                        output.write(
+                            f"メンバー: {', '.join(cluster_info.get('members', []))}\n"
+                        )
+
+                        if cluster_info.get("mean"):
+                            output.write("変数,平均,標準偏差,最小値,最大値\n")
+                            for var_name in cluster_info["mean"].keys():
+                                output.write(
+                                    f"{var_name},"
+                                    f"{cluster_info['mean'].get(var_name, 'N/A'):.4f},"
+                                    f"{cluster_info['std'].get(var_name, 'N/A'):.4f},"
+                                    f"{cluster_info['min'].get(var_name, 'N/A'):.4f},"
+                                    f"{cluster_info['max'].get(var_name, 'N/A'):.4f}\n"
+                                )
+                    output.write("\n")
+
         # 座標データの処理
         if coordinates_data:
             # 座標データを分析タイプに応じて分類
             row_coordinates = []
             col_coordinates = []
-            variable_coordinates = []  # 因子分析・PCA用
-            observation_coordinates = []  # 因子分析・PCA用
+            variable_coordinates = []  # PCA・因子分析用
+            observation_coordinates = []  # PCA・因子分析・クラスター分析用
 
             for coord in coordinates_data:
                 # 座標データを安全に取得
@@ -877,6 +1047,17 @@ async def download_analysis_results_csv(
                         output.write(
                             f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
                         )
+                    output.write("\n")
+
+            elif analysis_type == "cluster":
+                # クラスター分析の場合
+                if observation_coordinates:
+                    output.write("クラスター割り当て結果\n")
+                    output.write("サンプル名,クラスターID,クラスターラベル\n")
+                    for coord in observation_coordinates:
+                        cluster_id = int(coord["dimension_1"])
+                        cluster_label = f"クラスター {cluster_id + 1}"
+                        output.write(f"{coord['name']},{cluster_id},{cluster_label}\n")
                     output.write("\n")
 
             else:
