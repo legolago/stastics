@@ -34,7 +34,7 @@ const analysisRoutes = [
     path: '/cluster',
     description: 'データのグループ化と分類',
     icon: '🎯',
-    status: 'development'
+    status: 'available'
   }
 ];
 

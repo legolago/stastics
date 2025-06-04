@@ -16,9 +16,6 @@ import seaborn as sns
 from .base import BaseAnalyzer
 
 
-# analysis/cluster.py の ClusterAnalyzer クラスの修正
-
-
 class ClusterAnalyzer:
     def run_full_analysis(
         self,
@@ -39,8 +36,6 @@ class ClusterAnalyzer:
     ):
         """完全な分析を実行"""
         try:
-            # ... (既存の前処理)
-
             # 分析実行
             results = self.perform_analysis(
                 df,
@@ -76,12 +71,53 @@ class ClusterAnalyzer:
             # メタデータ保存
             self.save_metadata(db, session_id, results)
 
-            # ... (残りの処理)
+            # 座標データ保存（クラスター割り当て情報）
+            self.save_coordinates_data(db, session_id, df, results)
+
+            # 可視化データ作成
+            visualization_data = self.create_visualization_data(df, results)
+
+            # APIレスポンス用のデータを作成して返す
+            response_data = {
+                "status": "success",
+                "message": "クラスター分析が完了しました",
+                "session_id": session_id,
+                "session_name": session_name,
+                "metadata": {
+                    "session_name": session_name,
+                    "original_filename": file.filename,
+                    "analysis_type": "cluster",
+                    "rows": int(df.shape[0]),
+                    "columns": int(df.shape[1]),
+                    "column_names": [str(col) for col in df.columns.tolist()],
+                },
+                "analysis_results": {
+                    "method": results["method"],
+                    "n_clusters": int(results["n_clusters"]),
+                    "silhouette_score": float(results["silhouette_score"]),
+                    "calinski_harabasz_score": float(results["calinski_harabasz_score"]),
+                    "davies_bouldin_score": float(results["davies_bouldin_score"]),
+                    "inertia": float(results["inertia"]),
+                    "cluster_statistics": self.serialize_dict(results.get("cluster_statistics", {})),
+                },
+                "data_info": {
+                    "original_filename": file.filename,
+                    "rows": int(df.shape[0]),
+                    "columns": int(df.shape[1]),
+                    "column_names": [str(col) for col in df.columns.tolist()],
+                },
+                "visualization": visualization_data,
+            }
+
+            print(f"=== 分析完了 ===")
+            print(f"Session ID: {session_id}")
+            print(f"レスポンスデータ作成完了")
+            
+            return response_data
 
         except Exception as e:
             print(f"Analysis error: {e}")
             import traceback
-
             traceback.print_exc()
             raise
 
@@ -191,6 +227,66 @@ class ClusterAnalyzer:
         db.commit()
         print(f"メタデータ保存完了: session_id={session_id}")
 
+    def save_coordinates_data(self, db, session_id, df, results):
+        """座標データ保存（クラスター割り当て情報）"""
+        from models import CoordinatesData
+        
+        cluster_labels = results["cluster_labels"]
+        
+        print(f"=== 座標データ保存開始 ===")
+        print(f"クラスター割り当て: {len(cluster_labels)} 件")
+        
+        # クラスター割り当て情報を座標データとして保存
+        for i, (sample_name, cluster_id) in enumerate(zip(df.index, cluster_labels)):
+            coord_data = CoordinatesData(
+                session_id=session_id,
+                point_name=str(sample_name),
+                point_type="observation",  # クラスター分析では観測値として保存
+                dimension_1=float(cluster_id),  # クラスターIDを1次元目に保存
+                dimension_2=0.0,  # 2次元目は使用しない
+                dimension_3=0.0,  # 3次元目は使用しない
+            )
+            db.add(coord_data)
+        
+        db.commit()
+        print(f"座標データ保存完了: {len(cluster_labels)} 件")
+
+    def create_visualization_data(self, df, results):
+        """可視化用データ作成"""
+        cluster_labels = results["cluster_labels"]
+        cluster_stats = results.get("cluster_statistics", {})
+        
+        # クラスター別の色分け情報
+        unique_clusters = sorted(set(cluster_labels))
+        color_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                         '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        
+        cluster_colors = {}
+        for i, cluster_id in enumerate(unique_clusters):
+            cluster_colors[str(int(cluster_id))] = color_palette[i % len(color_palette)]
+        
+        # サンプル別のクラスター情報
+        sample_clusters = []
+        for i, (sample_name, cluster_id) in enumerate(zip(df.index, cluster_labels)):
+            sample_clusters.append({
+                "sample_name": str(sample_name),
+                "cluster_id": int(cluster_id),
+                "cluster_label": f"クラスター {int(cluster_id) + 1}",
+                "color": cluster_colors[str(int(cluster_id))]
+            })
+        
+        return {
+            "cluster_assignments": sample_clusters,
+            "cluster_colors": cluster_colors,
+            "cluster_statistics": self.serialize_dict(cluster_stats),
+            "evaluation_metrics": {
+                "silhouette_score": float(results["silhouette_score"]),
+                "calinski_harabasz_score": float(results["calinski_harabasz_score"]),
+                "davies_bouldin_score": float(results["davies_bouldin_score"]),
+                "inertia": float(results["inertia"])
+            }
+        }
+
     def perform_analysis(
         self,
         df,
@@ -259,7 +355,6 @@ class ClusterAnalyzer:
             "calinski_harabasz_score": calinski,
             "davies_bouldin_score": davies,
             "cluster_statistics": cluster_stats,
-            # その他の結果...
         }
 
     def calculate_inertia(self, X, labels):
@@ -272,6 +367,23 @@ class ClusterAnalyzer:
                 inertia += ((cluster_points - centroid) ** 2).sum().sum()
         return inertia
 
+    def serialize_dict(self, data):
+        """辞書内のnumpy型をPythonネイティブ型に変換"""
+        import numpy as np
+        
+        if isinstance(data, dict):
+            return {str(k): self.serialize_dict(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self.serialize_dict(item) for item in data]
+        elif isinstance(data, (np.integer, np.int32, np.int64)):
+            return int(data)
+        elif isinstance(data, (np.floating, np.float32, np.float64)):
+            return float(data)
+        elif isinstance(data, np.ndarray):
+            return data.tolist()
+        else:
+            return data
+
     def calculate_cluster_statistics(self, df, labels):
         """クラスター統計計算"""
         stats = {}
@@ -280,13 +392,13 @@ class ClusterAnalyzer:
             cluster_mask = labels == cluster_id
             cluster_data = df[cluster_mask]
 
-            stats[f"クラスター {cluster_id + 1}"] = {
+            stats[f"クラスター {int(cluster_id) + 1}"] = {
                 "size": int(cluster_mask.sum()),
-                "members": df.index[cluster_mask].tolist(),
-                "mean": cluster_data.mean().round(4).to_dict(),
-                "std": cluster_data.std().round(4).to_dict(),
-                "min": cluster_data.min().round(4).to_dict(),
-                "max": cluster_data.max().round(4).to_dict(),
+                "members": [str(name) for name in df.index[cluster_mask].tolist()],
+                "mean": {str(k): float(v) for k, v in cluster_data.mean().round(4).to_dict().items()},
+                "std": {str(k): float(v) for k, v in cluster_data.std().round(4).to_dict().items()},
+                "min": {str(k): float(v) for k, v in cluster_data.min().round(4).to_dict().items()},
+                "max": {str(k): float(v) for k, v in cluster_data.max().round(4).to_dict().items()},
             }
 
         print(f"クラスター統計計算完了: {len(stats)} clusters")
