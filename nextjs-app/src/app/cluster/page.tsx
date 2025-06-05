@@ -100,57 +100,119 @@ export default function ClusterPage() {
 
   // 特定のセッションの詳細を取得
   const fetchSessionDetail = async (sessionId: number) => {
-    try {
-      const response = await fetch(`/api/sessions/${sessionId}`);
-      
-      if (!response.ok) {
-        alert('セッション詳細の取得に失敗しました');
-        return;
-      }
-
-      const data: SessionDetailResponse = await response.json();
-
-      if (data.success && data.data) {
-        const pythonResponse = data.data;
-        
-        const analysisResult: ClusterAnalysisResult = {
-          success: true,
-          session_id: pythonResponse.session_info?.session_id || sessionId,
-          session_name: pythonResponse.session_info?.session_name || '',
-          analysis_type: 'cluster',
-          plot_base64: pythonResponse.visualization?.plot_image || "",
-          data_info: {
-            original_filename: pythonResponse.session_info?.filename || '',
-            rows: pythonResponse.metadata?.row_count || 0,
-            columns: pythonResponse.metadata?.column_count || 0
-          },
-          analysis_results: {
-            method: pythonResponse.analysis_data?.method || 'kmeans',
-            n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
-            silhouette_score: pythonResponse.analysis_data?.silhouette_score || 0,
-            calinski_harabasz_score: pythonResponse.analysis_data?.calinski_harabasz_score || 0,
-            davies_bouldin_score: pythonResponse.analysis_data?.davies_bouldin_score || 0,
-            inertia: pythonResponse.analysis_data?.inertia || 0,
-            cluster_statistics: pythonResponse.analysis_data?.cluster_statistics || {}
-          },
-          visualization: {
-            plot_image: pythonResponse.visualization?.plot_image || "",
-            cluster_assignments: (pythonResponse.analysis_data?.cluster_assignments || []).map((a: any): ClusterAssignment => ({
-              sample_name: a.sample_name || '',
-              cluster_id: a.cluster_id || 0,
-              cluster_label: a.cluster_label
-            }))
-          }
-        };
-
-        setResult(analysisResult as ClusterAnalysisResult);
-      } else {
-        alert('セッションデータの形式が不正です');
-      }
-    } catch (err) {
-      alert('セッション詳細の取得中にエラーが発生しました');
+  try {
+    const response = await fetch(`/api/sessions/${sessionId}`);
+    
+    if (!response.ok) {
+      throw new Error('セッション詳細の取得に失敗しました');
     }
-  };
+
+    const data: SessionDetailResponse = await response.json();
+    console.log('Session detail response:', data);
+
+    if (data.success && data.data) {
+      const pythonResponse = data.data;
+      
+      // 画像データとクラスター割り当ての取得
+      let plotImageData = '';
+      let clusterAssignments = pythonResponse.visualization?.cluster_assignments || [];
+      
+      // 画像データの取得を試みる
+      try {
+        const imageResponse = await fetch(`/api/sessions/${sessionId}/image`);
+        if (imageResponse.ok) {
+          const imageBlob = await imageResponse.blob();
+          plotImageData = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(
+              (reader.result as string).split(',')[1] || ''
+            );
+            reader.readAsDataURL(imageBlob);
+          });
+          console.log('✅ Plot image successfully loaded from API');
+        }
+      } catch (imageError) {
+        console.error('Plot image fetch error:', imageError);
+      }
+
+      const analysisResult: ExtendedClusterAnalysisResult = {
+        success: true,
+        session_id: pythonResponse.session_info?.session_id || sessionId,
+        session_name: pythonResponse.session_info?.session_name || '',
+        analysis_type: 'cluster',
+        plot_base64: plotImageData,
+        data: {
+          plot_image: plotImageData,
+          method: pythonResponse.analysis_data?.method || 'kmeans',
+          n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
+          n_samples: pythonResponse.metadata?.row_count || 0,
+          n_features: pythonResponse.metadata?.column_count || 0,
+          standardized: true,
+          silhouette_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.silhouette_score || 0,
+          calinski_harabasz_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.calinski_harabasz_score || 0,
+          davies_bouldin_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.davies_bouldin_score || 0,
+          inertia: pythonResponse.analysis_data?.total_inertia || 0,
+          cluster_centers: pythonResponse.analysis_data?.cluster_centers || [],
+          cluster_labels: pythonResponse.analysis_data?.cluster_labels || [],
+          cluster_assignments: clusterAssignments,
+          cluster_statistics: pythonResponse.analysis_data?.metadata?.cluster_statistics || {},
+          n_components: pythonResponse.analysis_data?.n_clusters || 3,
+          eigenvalues: pythonResponse.analysis_data?.eigenvalues || []
+        },
+        metadata: {
+          filename: pythonResponse.metadata?.original_filename || '',
+          session_name: pythonResponse.session_info?.session_name || '',
+          rows: pythonResponse.metadata?.row_count || 0,
+          columns: pythonResponse.metadata?.column_count || 0,
+          sample_names: clusterAssignments.map(a => a.sample_name),
+          cluster_names: Object.keys(pythonResponse.analysis_data?.metadata?.cluster_statistics || {})
+        },
+        data_info: {
+          original_filename: pythonResponse.metadata?.original_filename || '',
+          rows: pythonResponse.metadata?.row_count || 0,
+          columns: pythonResponse.metadata?.column_count || 0
+        },
+        analysis_results: {
+          method: pythonResponse.analysis_data?.method || 'kmeans',
+          n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
+          silhouette_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.silhouette_score || 0,
+          calinski_harabasz_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.calinski_harabasz_score || 0,
+          davies_bouldin_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.davies_bouldin_score || 0,
+          inertia: pythonResponse.analysis_data?.total_inertia || 0,
+          cluster_statistics: pythonResponse.analysis_data?.metadata?.cluster_statistics || {}
+        },
+        visualization: {
+          plot_image: plotImageData,
+          cluster_assignments: clusterAssignments
+        }
+      };
+
+      console.log('解析結果構造:', {
+        hasPlotImage: !!plotImageData,
+        plotImageLength: plotImageData?.length || 0,
+        hasVisualization: true,
+        hasClusterAssignments: clusterAssignments.length > 0,
+        clusterData: {
+          assignments: clusterAssignments.length,
+          statistics: Object.keys(pythonResponse.analysis_data?.metadata?.cluster_statistics || {}).length
+        },
+        metrics: {
+          silhouette: analysisResult.data.silhouette_score,
+          calinski: analysisResult.data.calinski_harabasz_score,
+          davies: analysisResult.data.davies_bouldin_score,
+          inertia: analysisResult.data.inertia
+        }
+      });
+
+      setResult(analysisResult);
+      return analysisResult;
+    }
+  } catch (err) {
+    console.error('セッション詳細取得エラー:', err);
+    alert('セッション詳細の取得中にエラーが発生しました');
+    return null;
+  }
+};
 
   // その他の関数（削除、ダウンロードなど）は元のコードと同じ
   const deleteSession = async (sessionId: number) => {
