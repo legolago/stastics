@@ -21,6 +21,8 @@ type ClusterApiResponse = ApiSuccessResponse | ApiErrorResponse;
 
 // 拡張されたクラスター分析結果型
 interface ExtendedClusterAnalysisResult extends BaseClusterAnalysisResult {
+  data: ClusterAnalysisData; // 必須プロパティとして追加
+  metadata: ClusterMetadata; // 必須プロパティとして追加
   visualization?: {
     plot_image?: string;
     cluster_assignments?: ClusterAssignment[];
@@ -57,7 +59,7 @@ export default function ClusterPage() {
     max_clusters: 10
   });
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<ExtendedClusterAnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   // 履歴管理の状態
@@ -260,7 +262,7 @@ export default function ClusterPage() {
   };
 
   // クラスター分析結果CSVを生成してダウンロード
-  const downloadAnalysisResultCSV = async (result: ClusterAnalysisResult) => {
+  const downloadAnalysisResultCSV = async (result: ExtendedClusterAnalysisResult) => {
     try {
       console.log('Downloading Cluster analysis CSV for session:', result.session_id);
       
@@ -457,33 +459,17 @@ export default function ClusterPage() {
         plotImageSample: plotImageData.substring(0, 50)
       });
 
-      const analysisResult: any = {
+      // 型定義に合わせた正しい構造でanalysisResultを作成
+      const analysisResult: ExtendedClusterAnalysisResult = {
         success: true,
         session_id: data.session_id,
         session_name: data.session_name,
         analysis_type: 'cluster',
-        plot_base64: plotImageData, // 直接代入
-        data_info: {
-          original_filename: data.metadata?.original_filename || (data as any).data_info?.original_filename || '',
-          rows: data.metadata?.rows || (data as any).data_info?.rows || 0,
-          columns: data.metadata?.columns || (data as any).data_info?.columns || 0
-        },
-        analysis_results: {
-          method: data.analysis_results?.method || 'kmeans',
-          n_clusters: data.analysis_results?.n_clusters || 3,
-          silhouette_score: data.analysis_results?.silhouette_score || 0,
-          calinski_harabasz_score: data.analysis_results?.calinski_harabasz_score || 0,
-          davies_bouldin_score: data.analysis_results?.davies_bouldin_score || 0,
-          inertia: data.analysis_results?.inertia || 0,
-          cluster_statistics: data.analysis_results?.cluster_statistics || (data as any).visualization?.cluster_statistics || {}
-        },
-        visualization: {
-          plot_image: plotImageData, // 直接代入
-          cluster_assignments: (data as any).visualization?.cluster_assignments || []
-        },
-        // 元の型との互換性のため
+        plot_base64: plotImageData,
+        
+        // data プロパティ（ClusterAnalysisData型）- 必須
         data: {
-          plot_image: plotImageData, // 直接代入
+          plot_image: plotImageData,
           method: data.analysis_results?.method || 'kmeans',
           n_clusters: data.analysis_results?.n_clusters || 3,
           n_samples: data.metadata?.rows || 0,
@@ -500,6 +486,8 @@ export default function ClusterPage() {
           n_components: data.analysis_results?.n_clusters || 3,
           eigenvalues: []
         },
+        
+        // metadata プロパティ（ClusterMetadata型）- 必須
         metadata: {
           session_name: data.session_name || '',
           filename: data.metadata?.original_filename || '',
@@ -507,18 +495,41 @@ export default function ClusterPage() {
           columns: data.metadata?.columns || 0,
           sample_names: ((data as any).visualization?.cluster_assignments || []).map((a: any) => a.sample_name || ''),
           cluster_names: Object.keys(data.analysis_results?.cluster_statistics || (data as any).visualization?.cluster_statistics || {})
+        },
+
+        // 追加の互換性プロパティ（ExtendedClusterAnalysisResult用）
+        data_info: {
+          original_filename: data.metadata?.original_filename || (data as any).data_info?.original_filename || '',
+          rows: data.metadata?.rows || (data as any).data_info?.rows || 0,
+          columns: data.metadata?.columns || (data as any).data_info?.columns || 0
+        },
+        analysis_results: {
+          method: data.analysis_results?.method || 'kmeans',
+          n_clusters: data.analysis_results?.n_clusters || 3,
+          silhouette_score: data.analysis_results?.silhouette_score || 0,
+          calinski_harabasz_score: data.analysis_results?.calinski_harabasz_score || 0,
+          davies_bouldin_score: data.analysis_results?.davies_bouldin_score || 0,
+          inertia: data.analysis_results?.inertia || 0,
+          cluster_statistics: data.analysis_results?.cluster_statistics || (data as any).visualization?.cluster_statistics || {}
+        },
+        visualization: {
+          plot_image: plotImageData,
+          cluster_assignments: (data as any).visualization?.cluster_assignments || []
         }
       };
 
       console.log('📊 Final result structure:', {
         hasPlotImageInResult: !!analysisResult.plot_base64,
         hasPlotImageInVisualization: !!analysisResult.visualization?.plot_image,
+        hasPlotImageInData: !!analysisResult.data?.plot_image,
         plotImageLength: analysisResult.plot_base64?.length || 0,
         hasClusterAssignments: !!analysisResult.visualization?.cluster_assignments?.length,
         clusterAssignmentsCount: analysisResult.visualization?.cluster_assignments?.length || 0,
         hasClusterStatistics: !!analysisResult.analysis_results?.cluster_statistics,
         clusterStatisticsKeys: Object.keys(analysisResult.analysis_results?.cluster_statistics || {}),
-        sessionId: analysisResult.session_id
+        sessionId: analysisResult.session_id,
+        hasDataProperty: !!analysisResult.data,
+        hasMetadataProperty: !!analysisResult.metadata
       });
 
       setResult(analysisResult);
@@ -536,8 +547,12 @@ export default function ClusterPage() {
   };
 
   // 画像表示のヘルパー関数
-  const getImageSrc = (result: any) => {
-    const imageData = result.visualization?.plot_image || result.plot_base64;
+  const getImageSrc = (result: ExtendedClusterAnalysisResult) => {
+    // 複数のソースから画像データを取得を試行
+    const imageData = result.visualization?.plot_image || 
+                     result.plot_base64 || 
+                     result.data?.plot_image;
+    
     if (imageData && imageData.length > 0) {
       return `data:image/png;base64,${imageData}`;
     }
@@ -979,8 +994,8 @@ export default function ClusterPage() {
                     <details>
                       <summary className="cursor-pointer">デバッグ情報（クリックで表示）</summary>
                       <div className="mt-2">
-                        <p>画像データ長: {(result.visualization?.plot_image || result.plot_base64)?.length || 0} 文字</p>
-                        <p>画像データプレビュー: {(result.visualization?.plot_image || result.plot_base64)?.substring(0, 100)}...</p>
+                        <p>画像データ長: {(result.visualization?.plot_image || result.plot_base64 || result.data?.plot_image)?.length || 0} 文字</p>
+                        <p>画像データプレビュー: {(result.visualization?.plot_image || result.plot_base64 || result.data?.plot_image)?.substring(0, 100)}...</p>
                         <p>セッションID: {result.session_id}</p>
                         <p>画像ソース: {imageSrc?.substring(0, 100)}...</p>
                       </div>
@@ -1004,6 +1019,7 @@ export default function ClusterPage() {
                       <div className="mt-2 text-xs text-gray-600">
                         <p>デバッグ: visualization?.plot_image = {result.visualization?.plot_image ? `あり (${result.visualization.plot_image.length}文字)` : 'なし'}</p>
                         <p>デバッグ: plot_base64 = {result.plot_base64 ? `あり (${result.plot_base64.length}文字)` : 'なし'}</p>
+                        <p>デバッグ: data?.plot_image = {result.data?.plot_image ? `あり (${result.data.plot_image.length}文字)` : 'なし'}</p>
                       </div>
                     </div>
                   </div>
