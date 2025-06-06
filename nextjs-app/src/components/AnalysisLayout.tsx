@@ -33,7 +33,7 @@ const analysisRoutes = [
     name: 'クラスター分析',
     path: '/cluster',
     description: 'データのグループ化と分類',
-    icon: '🎯',
+    icon: '🔍',
     status: 'available'
   }
 ];

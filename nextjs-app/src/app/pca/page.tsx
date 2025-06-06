@@ -1141,7 +1141,7 @@ export default function PCAPage() {
           </div>
           
           <div className="bg-green-50 rounded-lg p-4">
-            <h3 className="font-semibold text-green-900 mb-2">🎯 適用場面</h3>
+            <h3 className="font-semibold text-green-900 mb-2">🔍 適用場面</h3>
             <ul className="text-sm text-green-800 space-y-1">
               <li>• データの可視化・要約</li>
               <li>• 次元削減・ノイズ除去</li>

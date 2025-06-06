@@ -1426,7 +1426,7 @@ export default function ClusterPage() {
           </div>
           
           <div className="bg-green-50 rounded-lg p-4">
-            <h3 className="font-semibold text-green-900 mb-2">🎯 適用場面</h3>
+            <h3 className="font-semibold text-green-900 mb-2">🔍 適用場面</h3>
             <ul className="text-sm text-green-800 space-y-1">
               <li>• 顧客セグメンテーション</li>
               <li>• 市場調査・マーケティング</li>

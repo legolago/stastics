@@ -341,7 +341,7 @@ const ExtendedIconSamplesDemo = () => {
     { name: "下降グラフ", emoji: "📉" },
     { name: "虫眼鏡", emoji: "🔍" },
     { name: "歯車", emoji: "⚙️" },
-    { name: "的", emoji: "🎯" },
+    { name: "的", emoji: "🔍" },
     { name: "クリップボード", emoji: "📋" },
     { name: "電球", emoji: "💡" },
     { name: "ロケット", emoji: "🚀" },
