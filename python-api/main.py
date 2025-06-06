@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import matplotlib
 from routers.correspondence import router as correspondence_router
+import logging
 
 matplotlib.use("Agg")
 
@@ -13,14 +14,21 @@ from models import create_tables
 # ルーターのインポート
 from routers import correspondence, sessions, pca, factor, cluster
 
+# ログ設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
 # PCAのインポート - ファイルの場所に応じて以下のいずれかを使用
 try:
     from routers import pca  # routers/pca.py にある場合
+
     pca_available = True
     print("✓ PCA router loaded from routers.pca")
 except ImportError:
     try:
         import pca  # ルートディレクトリのpca.py にある場合
+
         pca_available = True
         print("✓ PCA router loaded from pca")
     except ImportError:
@@ -30,6 +38,7 @@ except ImportError:
 # クラスター分析のインポート
 try:
     from routers import cluster
+
     cluster_available = True
     print("✓ Cluster router loaded from routers.cluster")
 except ImportError:
@@ -60,6 +69,14 @@ app.include_router(correspondence.router, prefix="/api")
 app.include_router(sessions.router, prefix="/api")
 app.include_router(pca.router, prefix="/api")
 app.include_router(factor.router, prefix="/api")  # 因子分析ルーター
+app.include_router(sessions.router, prefix="/api")
+
+print("✓ All routers registered:")
+print("  - Correspondence: /api/correspondence")
+print("  - Sessions: /api/sessions")
+print("  - PCA: /api/pca")
+print("  - Factor: /api/factor")
+print("  - Cluster: /api/cluster")
 
 # クラスター分析ルーターを条件付きで登録
 if cluster_available:
@@ -73,13 +90,13 @@ else:
 async def root():
     """APIの基本情報を返す"""
     supported_methods = ["correspondence", "factor"]
-    
+
     if pca_available:
         supported_methods.append("pca")
-    
+
     if cluster_available:
         supported_methods.append("cluster")
-    
+
     return {
         "message": "多変量解析API",
         "version": "2.0.0",
@@ -91,10 +108,10 @@ async def root():
 async def health_check():
     """ヘルスチェック"""
     return {
-        "status": "healthy", 
-        "version": "2.0.0", 
+        "status": "healthy",
+        "version": "2.0.0",
         "pca_available": pca_available,
-        "cluster_available": cluster_available
+        "cluster_available": cluster_available,
     }
 
 
@@ -115,7 +132,7 @@ async def get_available_methods():
             "description": "潜在的な因子構造を発見する分析手法",
             "endpoint": "/api/factor/analyze",
             "status": "available",
-        }
+        },
     ]
 
     if pca_available:
@@ -143,8 +160,8 @@ async def get_available_methods():
                 "methods_endpoint": "/api/cluster/methods",
                 "download_endpoints": {
                     "assignments": "/api/cluster/download/{session_id}/assignments",
-                    "details": "/api/cluster/download/{session_id}/details"
-                }
+                    "details": "/api/cluster/download/{session_id}/details",
+                },
             }
         )
 

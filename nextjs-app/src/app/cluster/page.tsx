@@ -13,7 +13,9 @@ import {
   ApiErrorResponse,
   ApiSuccessResponse,
   ClusterAssignment,
-  ClusterStatistics
+  ClusterStatistics,
+  ClusterAnalysisData,  // 追加
+  ClusterMetadata
 } from '../../types/analysis';
 
 // レスポンス型の統合
@@ -99,120 +101,219 @@ export default function ClusterPage() {
   };
 
   // 特定のセッションの詳細を取得
+// 特定のセッションの詳細を取得 - 修正版
   const fetchSessionDetail = async (sessionId: number) => {
-  try {
-    const response = await fetch(`/api/sessions/${sessionId}`);
-    
-    if (!response.ok) {
-      throw new Error('セッション詳細の取得に失敗しました');
-    }
-
-    const data: SessionDetailResponse = await response.json();
-    console.log('Session detail response:', data);
-
-    if (data.success && data.data) {
-      const pythonResponse = data.data;
+    try {
+      console.log(`🔍 セッション詳細取得開始: ${sessionId}`);
       
-      // 画像データとクラスター割り当ての取得
-      let plotImageData = '';
-      let clusterAssignments = pythonResponse.visualization?.cluster_assignments || [];
+      const response = await fetch(`/api/sessions/${sessionId}`);
       
-      // 画像データの取得を試みる
-      try {
-        const imageResponse = await fetch(`/api/sessions/${sessionId}/image`);
-        if (imageResponse.ok) {
-          const imageBlob = await imageResponse.blob();
-          plotImageData = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(
-              (reader.result as string).split(',')[1] || ''
-            );
-            reader.readAsDataURL(imageBlob);
-          });
-          console.log('✅ Plot image successfully loaded from API');
-        }
-      } catch (imageError) {
-        console.error('Plot image fetch error:', imageError);
+      if (!response.ok) {
+        throw new Error('セッション詳細の取得に失敗しました');
       }
 
-      const analysisResult: ExtendedClusterAnalysisResult = {
-        success: true,
-        session_id: pythonResponse.session_info?.session_id || sessionId,
-        session_name: pythonResponse.session_info?.session_name || '',
-        analysis_type: 'cluster',
-        plot_base64: plotImageData,
-        data: {
-          plot_image: plotImageData,
-          method: pythonResponse.analysis_data?.method || 'kmeans',
-          n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
-          n_samples: pythonResponse.metadata?.row_count || 0,
-          n_features: pythonResponse.metadata?.column_count || 0,
-          standardized: true,
-          silhouette_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.silhouette_score || 0,
-          calinski_harabasz_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.calinski_harabasz_score || 0,
-          davies_bouldin_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.davies_bouldin_score || 0,
-          inertia: pythonResponse.analysis_data?.total_inertia || 0,
-          cluster_centers: pythonResponse.analysis_data?.cluster_centers || [],
-          cluster_labels: pythonResponse.analysis_data?.cluster_labels || [],
-          cluster_assignments: clusterAssignments,
-          cluster_statistics: pythonResponse.analysis_data?.metadata?.cluster_statistics || {},
-          n_components: pythonResponse.analysis_data?.n_clusters || 3,
-          eigenvalues: pythonResponse.analysis_data?.eigenvalues || []
-        },
-        metadata: {
-          filename: pythonResponse.metadata?.original_filename || '',
+      const data: SessionDetailResponse = await response.json();
+      console.log('📥 Session detail response:', data);
+
+      console.log('🔍 RAW DATA DUMP:');
+      console.log('Full data object:', JSON.stringify(data, null, 2).substring(0, 1000) + '...');
+      console.log('data.data type:', typeof data.data);
+      console.log('data.data content:', data.data);
+
+      if (data.success && data.data) {
+        // pythonResponseを一度だけ定義（二重ネスト対応）
+        const pythonResponse = (data.data as any).success ? (data.data as any).data : data.data;
+
+        console.log('🔍 DETAILED RESPONSE ANALYSIS:');
+        console.log('data keys:', Object.keys(data));
+        console.log('data.data keys:', Object.keys(data.data || {}));
+        console.log('🔍 Using pythonResponse with keys:', Object.keys(pythonResponse || {}));
+        console.log('pythonResponse keys:', Object.keys(pythonResponse || {}));
+
+        if (pythonResponse.cluster_assignments) {
+          console.log('✅ Direct cluster_assignments found:', pythonResponse.cluster_assignments.length);
+        } else {
+          console.log('❌ Direct cluster_assignments NOT found');
+        }
+
+        if (pythonResponse.visualization?.cluster_assignments) {
+          console.log('✅ visualization.cluster_assignments found:', pythonResponse.visualization.cluster_assignments.length);
+        } else {
+          console.log('❌ visualization.cluster_assignments NOT found');
+          console.log('visualization keys:', Object.keys(pythonResponse.visualization || {}));
+        }
+
+        if (pythonResponse.analysis_data?.visualization?.cluster_assignments) {
+          console.log('✅ analysis_data.visualization.cluster_assignments found:', pythonResponse.analysis_data.visualization.cluster_assignments.length);
+        } else {
+          console.log('❌ analysis_data.visualization.cluster_assignments NOT found');
+          if (pythonResponse.analysis_data?.visualization) {
+            console.log('analysis_data.visualization keys:', Object.keys(pythonResponse.analysis_data.visualization));
+          }
+        }
+
+        // 画像データの取得（同じpythonResponseを使用）
+        let plotImageData = '';
+        
+        // 1. visualization.plot_imageから取得を試行
+        if (pythonResponse.visualization?.plot_image) {
+          plotImageData = pythonResponse.visualization.plot_image;
+          console.log('✅ Plot image found in visualization:', plotImageData.length);
+        }
+        
+        // 2. APIから直接画像取得を試行
+        if (!plotImageData) {
+          try {
+            console.log('🔄 Trying to fetch image from API...');
+            const imageResponse = await fetch(`/api/sessions/${sessionId}/image`);
+            if (imageResponse.ok) {
+              const imageBlob = await imageResponse.blob();
+              plotImageData = await new Promise<string>((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(
+                  (reader.result as string).split(',')[1] || ''
+                );
+                reader.readAsDataURL(imageBlob);
+              });
+              console.log('✅ Plot image loaded from API:', plotImageData.length);
+            }
+          } catch (imageError) {
+            console.warn('⚠️ API image fetch failed:', imageError);
+          }
+        }
+
+        // クラスター割り当ての構築（同じpythonResponseを使用）
+        let clusterAssignments: ClusterAssignment[] = [];
+        
+        console.log('🔍 Cluster assignments debug:');
+        console.log('pythonResponse.visualization:', pythonResponse.visualization);
+        console.log('pythonResponse.cluster_assignments:', pythonResponse.cluster_assignments);
+        console.log('Array.isArray check:', Array.isArray(pythonResponse.visualization?.cluster_assignments));
+        console.log('Length check:', pythonResponse.visualization?.cluster_assignments?.length);
+        console.log('Length > 0 check:', pythonResponse.visualization?.cluster_assignments?.length > 0);
+        
+        // 1. 直接アクセスを最初に試す
+        if (pythonResponse.cluster_assignments?.length > 0) {
+          clusterAssignments = pythonResponse.cluster_assignments;
+          console.log('✅ Cluster assignments from direct access:', clusterAssignments.length);
+        }
+        // 2. visualization.cluster_assignmentsから取得
+        else if (pythonResponse.visualization?.cluster_assignments?.length > 0) {
+          clusterAssignments = pythonResponse.visualization.cluster_assignments;
+          console.log('✅ Cluster assignments from visualization:', clusterAssignments.length);
+        }
+        // 3. analysis_data.cluster_assignmentsから取得
+        else if (pythonResponse.analysis_data?.cluster_assignments?.length > 0) {
+          clusterAssignments = pythonResponse.analysis_data.cluster_assignments;
+          console.log('✅ Cluster assignments from analysis_data:', clusterAssignments.length);
+        }
+        // 4. analysis_data.visualization.cluster_assignmentsから取得
+        else if (pythonResponse.analysis_data?.visualization?.cluster_assignments?.length > 0) {
+          clusterAssignments = pythonResponse.analysis_data.visualization.cluster_assignments;
+          console.log('✅ Cluster assignments from analysis_data.visualization:', clusterAssignments.length);
+        }
+        else {
+          console.warn('⚠️ No cluster assignments found');
+          clusterAssignments = [];
+        }
+
+        // 残りの処理（クラスター統計、評価指標など）も同じpythonResponseを使用
+        const clusterStatistics = 
+          pythonResponse.cluster_statistics ||
+          pythonResponse.analysis_data?.cluster_statistics ||
+          pythonResponse.visualization?.cluster_statistics ||
+          {};
+
+        const clusterMetrics = 
+          pythonResponse.evaluation_metrics ||
+          pythonResponse.analysis_data?.evaluation_metrics ||
+          pythonResponse.visualization?.evaluation_metrics ||
+          {};
+
+        console.log('📊 Building analysis result with data:', {
+          sessionId,
+          hasPlotImage: !!plotImageData,
+          plotImageLength: plotImageData.length,
+          clusterAssignmentsCount: clusterAssignments.length,
+          hasClusterStatistics: Object.keys(clusterStatistics).length > 0,
+          hasClusterMetrics: Object.keys(clusterMetrics).length > 0,
+          sessionName: pythonResponse.session_info?.session_name,
+          originalFilename: pythonResponse.metadata?.original_filename
+        });
+
+        // 以下、analysisResult の構築も同じpythonResponseを使用...
+        // analysisResult構築の直前に追加
+        console.log('🔧 Building analysisResult...');
+
+        const analysisResult: ExtendedClusterAnalysisResult = {
+          success: true,
+          session_id: sessionId,
           session_name: pythonResponse.session_info?.session_name || '',
-          rows: pythonResponse.metadata?.row_count || 0,
-          columns: pythonResponse.metadata?.column_count || 0,
-          sample_names: clusterAssignments.map(a => a.sample_name),
-          cluster_names: Object.keys(pythonResponse.analysis_data?.metadata?.cluster_statistics || {})
-        },
-        data_info: {
-          original_filename: pythonResponse.metadata?.original_filename || '',
-          rows: pythonResponse.metadata?.row_count || 0,
-          columns: pythonResponse.metadata?.column_count || 0
-        },
-        analysis_results: {
-          method: pythonResponse.analysis_data?.method || 'kmeans',
-          n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
-          silhouette_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.silhouette_score || 0,
-          calinski_harabasz_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.calinski_harabasz_score || 0,
-          davies_bouldin_score: pythonResponse.analysis_data?.metadata?.cluster_metrics?.davies_bouldin_score || 0,
-          inertia: pythonResponse.analysis_data?.total_inertia || 0,
-          cluster_statistics: pythonResponse.analysis_data?.metadata?.cluster_statistics || {}
-        },
-        visualization: {
-          plot_image: plotImageData,
-          cluster_assignments: clusterAssignments
-        }
-      };
+          analysis_type: 'cluster',
+          plot_base64: plotImageData,
+          
+          // data プロパティ（必須）
+          data: {
+            plot_image: plotImageData,
+            method: pythonResponse.analysis_data?.method || 'kmeans',
+            n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
+            n_samples: pythonResponse.metadata?.row_count || 0,
+            n_features: pythonResponse.metadata?.column_count || 0,
+            standardized: true,
+            silhouette_score: clusterMetrics.silhouette_score || 0,
+            calinski_harabasz_score: clusterMetrics.calinski_harabasz_score || 0,
+            davies_bouldin_score: clusterMetrics.davies_bouldin_score || 0,
+            inertia: clusterMetrics.inertia || pythonResponse.analysis_data?.total_inertia || 0,
+            cluster_centers: [],
+            cluster_labels: pythonResponse.analysis_data?.cluster_labels || [],
+            cluster_assignments: clusterAssignments,
+            cluster_statistics: clusterStatistics,
+            n_components: pythonResponse.analysis_data?.n_clusters || 3,
+            eigenvalues: []
+          },
+          
+          // metadata プロパティ（必須）
+          metadata: {
+            session_name: pythonResponse.session_info?.session_name || '',
+            filename: pythonResponse.metadata?.original_filename || '',
+            rows: pythonResponse.metadata?.row_count || 0,
+            columns: pythonResponse.metadata?.column_count || 0,
+            sample_names: clusterAssignments.map(a => a.sample_name),
+            cluster_names: Object.keys(clusterStatistics)
+          },
 
-      console.log('解析結果構造:', {
-        hasPlotImage: !!plotImageData,
-        plotImageLength: plotImageData?.length || 0,
-        hasVisualization: true,
-        hasClusterAssignments: clusterAssignments.length > 0,
-        clusterData: {
-          assignments: clusterAssignments.length,
-          statistics: Object.keys(pythonResponse.analysis_data?.metadata?.cluster_statistics || {}).length
-        },
-        metrics: {
-          silhouette: analysisResult.data.silhouette_score,
-          calinski: analysisResult.data.calinski_harabasz_score,
-          davies: analysisResult.data.davies_bouldin_score,
-          inertia: analysisResult.data.inertia
-        }
-      });
+          // 追加の互換性プロパティ
+          data_info: {
+            original_filename: pythonResponse.metadata?.original_filename || '',
+            rows: pythonResponse.metadata?.row_count || 0,
+            columns: pythonResponse.metadata?.column_count || 0
+          },
+          analysis_results: {
+            method: pythonResponse.analysis_data?.method || 'kmeans',
+            n_clusters: pythonResponse.analysis_data?.n_clusters || 3,
+            silhouette_score: clusterMetrics.silhouette_score || 0,
+            calinski_harabasz_score: clusterMetrics.calinski_harabasz_score || 0,
+            davies_bouldin_score: clusterMetrics.davies_bouldin_score || 0,
+            inertia: clusterMetrics.inertia || pythonResponse.analysis_data?.total_inertia || 0,
+            cluster_statistics: clusterStatistics
+          },
+          visualization: {
+            plot_image: plotImageData,
+            cluster_assignments: clusterAssignments
+          }
+        };
 
-      setResult(analysisResult);
-      return analysisResult;
+        console.log('🔧 Setting result...');
+        setResult(analysisResult);
+        console.log('✅ Result set successfully');
+        return analysisResult;
+      }
+    } catch (err) {
+      console.error('❌ セッション詳細取得エラー:', err);
+      alert('セッション詳細の取得中にエラーが発生しました: ' + (err instanceof Error ? err.message : '不明なエラー'));
+      return null;
     }
-  } catch (err) {
-    console.error('セッション詳細取得エラー:', err);
-    alert('セッション詳細の取得中にエラーが発生しました');
-    return null;
-  }
-};
+  };
 
   // その他の関数（削除、ダウンロードなど）は元のコードと同じ
   const deleteSession = async (sessionId: number) => {

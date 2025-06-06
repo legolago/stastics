@@ -161,6 +161,11 @@ export interface PythonSessionDetailResponse {
   analysis_data: AnalysisData;
   metadata: MetaData;
   visualization: VisualizationData;
+  cluster_assignments?: ClusterAssignment[];
+  cluster_statistics?: Record<string, ClusterStatistics>;
+  evaluation_metrics?: any;
+  cluster_colors?: Record<string, string>;
+  plot_image?: string;
 }
 
 // Next.js APIからのセッション詳細レスポンス

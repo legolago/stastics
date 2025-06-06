@@ -1,339 +1,259 @@
-from fastapi import APIRouter, HTTPException, Depends, Query, Path
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import pandas as pd
 import io
-import os
+import csv
 import base64
-import json
+from datetime import datetime
 
 from models import (
     get_db,
     AnalysisSession,
     OriginalData,
     CoordinatesData,
-    VisualizationData,
     EigenvalueData,
+    VisualizationData,
     AnalysisMetadata,
-    get_sessions_by_analysis_type,
-    get_analysis_summary_stats,
     AnalysisTypes,
+    MetadataTypes,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
-@router.get("")
-async def get_analysis_sessions(
-    user_id: str = Query("default", description="ユーザーID"),
-    search: str = Query(None, description="検索キーワード"),
-    tags: str = Query(None, description="タグフィルター（カンマ区切り）"),
-    analysis_type: str = Query(None, description="分析タイプフィルター"),
-    limit: int = Query(20, description="取得件数"),
+@router.get("/")
+async def get_sessions(
+    userId: str = Query("default", description="ユーザーID"),
+    limit: int = Query(50, description="取得件数"),
     offset: int = Query(0, description="オフセット"),
+    analysis_type: Optional[str] = Query(None, description="分析タイプでフィルタ"),
     db: Session = Depends(get_db),
 ):
-    """保存された分析セッションの一覧を取得"""
+    """分析セッション一覧を取得"""
     try:
-        query = db.query(AnalysisSession).filter(AnalysisSession.user_id == user_id)
+        query = db.query(AnalysisSession).filter(AnalysisSession.user_id == userId)
 
-        # 分析タイプでフィルター
         if analysis_type:
-            if AnalysisTypes.is_valid(analysis_type):
-                query = query.filter(AnalysisSession.analysis_type == analysis_type)
-                print(f"Filtering by analysis_type: {analysis_type}")
-            else:
-                raise HTTPException(status_code=400, detail="無効な分析手法です")
+            query = query.filter(AnalysisSession.analysis_type == analysis_type)
 
-        # 検索キーワードでフィルター
-        if search:
-            query = query.filter(
-                AnalysisSession.session_name.ilike(f"%{search}%")
-                | AnalysisSession.description.ilike(f"%{search}%")
-                | AnalysisSession.original_filename.ilike(f"%{search}%")
-            )
+        sessions = (
+            query.order_by(desc(AnalysisSession.analysis_timestamp))
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
 
-        # タグでフィルター
-        if tags:
-            tag_list = [tag.strip() for tag in tags.split(",")]
-            for tag in tag_list:
-                query = query.filter(AnalysisSession.tags.any(tag))
-
-        # 最新順でソート
-        query = query.order_by(AnalysisSession.analysis_timestamp.desc())
-
-        # ページネーション
-        total = query.count()
-        sessions = query.offset(offset).limit(limit).all()
-
-        print(f"Found {total} sessions total, returning {len(sessions)} sessions")
-
-        # レスポンス形式を整理
-        results = []
+        session_list = []
         for session in sessions:
-            # analysis_typeを安全に取得
-            analysis_type = getattr(session, "analysis_type", "correspondence")
-
             session_data = {
                 "session_id": session.id,
                 "session_name": session.session_name,
-                "filename": session.original_filename,
                 "description": session.description,
-                "tags": session.tags or [],
+                "tags": session.tags,
+                "user_id": session.user_id,
+                "filename": session.original_filename,
                 "analysis_timestamp": session.analysis_timestamp.isoformat(),
-                "analysis_type": analysis_type,
-                "total_inertia": (
-                    float(session.total_inertia) if session.total_inertia else None
-                ),
-                "dimensions_count": getattr(session, "dimensions_count", None),
-                "dimension_1_contribution": (
-                    float(session.dimension_1_contribution)
-                    if hasattr(session, "dimension_1_contribution")
-                    and session.dimension_1_contribution
-                    else None
-                ),
-                "dimension_2_contribution": (
-                    float(session.dimension_2_contribution)
-                    if hasattr(session, "dimension_2_contribution")
-                    and session.dimension_2_contribution
-                    else None
-                ),
+                "analysis_type": session.analysis_type,
                 "row_count": session.row_count,
                 "column_count": session.column_count,
+                "total_inertia": session.total_inertia,
+                "chi2_value": session.chi2_value,
+                "degrees_of_freedom": session.degrees_of_freedom,
             }
+            session_list.append(session_data)
 
-            # 分析手法別の追加情報
-            if session.analysis_type == "correspondence":
-                session_data.update(
-                    {
-                        "chi2_value": (
-                            float(session.chi2_value) if session.chi2_value else 0.0
-                        ),
-                        "degrees_of_freedom": session.degrees_of_freedom,
-                    }
-                )
-            elif session.analysis_type == "pca":
-                session_data.update(
-                    {
-                        "kmo_value": (
-                            float(session.chi2_value) if session.chi2_value else 0.0
-                        ),  # KMO値をchi2_valueに保存
-                        "n_components": session.degrees_of_freedom,  # 主成分数をdegrees_of_freedomに保存
-                    }
-                )
-            elif session.analysis_type == "cluster":
-                session_data.update(
-                    {
-                        "n_clusters": session.degrees_of_freedom,  # クラスター数をdegrees_of_freedomに保存
-                        "evaluation_score": (
-                            float(session.chi2_value) if session.chi2_value else 0.0
-                        ),  # 評価指標をchi2_valueに保存
-                    }
-                )
-            elif session.analysis_type == "factor":
-                session_data.update(
-                    {
-                        "n_factors": session.degrees_of_freedom,
-                        "total_variance_explained": (
-                            float(session.chi2_value) if session.chi2_value else 0.0
-                        ),
-                    }
-                )
+        return {"success": True, "data": session_list}
 
-            results.append(session_data)
-
-        return {
-            "success": True,
-            "data": results,
-            "pagination": {
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-                "has_next": offset + limit < total,
-            },
-        }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"Sessions API Error: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-
+        print(f"セッション一覧取得エラー: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"データ取得中にエラーが発生しました: {str(e)}"
-        )
-
-
-@router.get("/stats")
-async def get_session_stats(db: Session = Depends(get_db)):
-    """分析手法別の統計情報を取得"""
-    try:
-        stats = get_analysis_summary_stats(db)
-        return {"statistics": stats}
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"統計情報取得中にエラーが発生しました: {str(e)}"
-        )
-
-
-@router.delete("/{session_id}")
-async def delete_analysis_session(
-    session_id: int = Path(..., description="削除するセッションのID"),
-    db: Session = Depends(get_db),
-):
-    """分析セッションとその関連データを削除"""
-    try:
-        # セッションの存在確認
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(
-                status_code=404, detail="指定されたセッションが見つかりません"
-            )
-
-        print(f"Deleting session: {session_id} ({session.session_name})")
-
-        # 関連データを削除（外部キー制約に配慮して順番に削除）
-
-        # 1. メタデータを削除（新しいテーブル）
-        metadata_count = 0
-        try:
-            metadata_count = (
-                db.query(AnalysisMetadata)
-                .filter(AnalysisMetadata.session_id == session_id)
-                .count()
-            )
-            if metadata_count > 0:
-                db.query(AnalysisMetadata).filter(
-                    AnalysisMetadata.session_id == session_id
-                ).delete()
-                print(f"Deleted {metadata_count} metadata records")
-        except Exception as meta_error:
-            print(f"Could not delete metadata: {meta_error}")
-
-        # 2. 可視化データを削除
-        visualization_count = (
-            db.query(VisualizationData)
-            .filter(VisualizationData.session_id == session_id)
-            .count()
-        )
-        if visualization_count > 0:
-            db.query(VisualizationData).filter(
-                VisualizationData.session_id == session_id
-            ).delete()
-            print(f"Deleted {visualization_count} visualization records")
-
-        # 3. 座標データを削除
-        coordinates_count = (
-            db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .count()
-        )
-        if coordinates_count > 0:
-            db.query(CoordinatesData).filter(
-                CoordinatesData.session_id == session_id
-            ).delete()
-            print(f"Deleted {coordinates_count} coordinates records")
-
-        # 4. 固有値データを削除
-        eigenvalue_count = (
-            db.query(EigenvalueData)
-            .filter(EigenvalueData.session_id == session_id)
-            .count()
-        )
-        if eigenvalue_count > 0:
-            db.query(EigenvalueData).filter(
-                EigenvalueData.session_id == session_id
-            ).delete()
-            print(f"Deleted {eigenvalue_count} eigenvalue records")
-
-        # 5. 元データを削除
-        original_data_count = (
-            db.query(OriginalData).filter(OriginalData.session_id == session_id).count()
-        )
-        if original_data_count > 0:
-            db.query(OriginalData).filter(
-                OriginalData.session_id == session_id
-            ).delete()
-            print(f"Deleted {original_data_count} original data records")
-
-        # 6. 最後にセッション自体を削除
-        db.delete(session)
-
-        # 変更をコミット
-        db.commit()
-
-        print(f"Successfully deleted session {session_id}")
-
-        return {
-            "success": True,
-            "message": f"セッション '{session.session_name}' を正常に削除しました",
-            "deleted_session_id": session_id,
-            "deleted_counts": {
-                "metadata": metadata_count,
-                "visualization_data": visualization_count,
-                "coordinates_data": coordinates_count,
-                "eigenvalue_data": eigenvalue_count,
-                "original_data": original_data_count,
-            },
-        }
-
-    except HTTPException:
-        # HTTPExceptionはそのまま再発生
-        raise
-    except Exception as e:
-        # データベースエラーの場合はロールバック
-        db.rollback()
-        print(f"Delete session error: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
-
-        raise HTTPException(
-            status_code=500, detail=f"セッション削除中にエラーが発生しました: {str(e)}"
+            status_code=500, detail=f"セッション一覧の取得に失敗しました: {str(e)}"
         )
 
 
 @router.get("/{session_id}")
-async def get_analysis_session(
-    session_id: int = Path(..., description="取得するセッションのID"),
-    db: Session = Depends(get_db),
-):
-    """指定されたセッションの詳細情報を取得"""
+async def get_session_detail(session_id: int, db: Session = Depends(get_db)):
+    """特定のセッションの詳細情報を取得"""
     try:
+        print(f"=== セッション詳細取得開始: {session_id} ===")
+
+        # セッション基本情報を取得
         session = (
             db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
         )
         if not session:
-            raise HTTPException(
-                status_code=404, detail="指定されたセッションが見つかりません"
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        print(
+            f"セッション情報: {session.session_name}, 分析タイプ: {session.analysis_type}"
+        )
+
+        # 基本的なセッション情報
+        session_info = {
+            "session_id": session.id,
+            "session_name": session.session_name,
+            "description": session.description,
+            "tags": session.tags,
+            "user_id": session.user_id,
+            "analysis_timestamp": session.analysis_timestamp.isoformat(),
+            "analysis_type": session.analysis_type,
+        }
+
+        # メタデータ情報
+        metadata = {
+            "original_filename": session.original_filename,
+            "row_count": session.row_count,
+            "column_count": session.column_count,
+        }
+
+        # 分析タイプ別の詳細データ取得
+        if session.analysis_type == AnalysisTypes.CLUSTER:
+            analysis_data = await get_cluster_analysis_data(db, session_id, session)
+        elif session.analysis_type == AnalysisTypes.CORRESPONDENCE:
+            analysis_data = await get_correspondence_analysis_data(
+                db, session_id, session
+            )
+        elif session.analysis_type == AnalysisTypes.PCA:
+            analysis_data = await get_pca_analysis_data(db, session_id, session)
+        elif session.analysis_type == AnalysisTypes.FACTOR:
+            analysis_data = await get_factor_analysis_data(db, session_id, session)
+        else:
+            analysis_data = {}
+
+        print(f"分析データ取得完了: {len(analysis_data)} keys")
+
+        # 可視化データ取得
+        visualization_data = get_visualization_data(db, session_id)
+        print(f"可視化データ: {'あり' if visualization_data else 'なし'}")
+
+        # フロントエンド用に構造を調整
+        if session.analysis_type == AnalysisTypes.CLUSTER:
+            # クラスター分析用の特別な構造
+            cluster_assignments = analysis_data.get("cluster_assignments", [])
+            cluster_statistics = analysis_data.get("cluster_statistics", {})
+            evaluation_metrics = analysis_data.get("evaluation_metrics", {})
+
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": session_info,
+                    "metadata": metadata,
+                    "analysis_data": {
+                        **analysis_data,
+                        # visualization の中にもデータを配置
+                        "visualization": {
+                            "cluster_assignments": cluster_assignments,
+                            "cluster_colors": {
+                                str(i): get_cluster_color(i)
+                                for i in range(
+                                    max(1, analysis_data.get("n_clusters", 1))
+                                )
+                            },
+                            "cluster_statistics": cluster_statistics,
+                            "evaluation_metrics": evaluation_metrics,
+                            "plot_image": (
+                                visualization_data.get("plot_image")
+                                if visualization_data
+                                else None
+                            ),
+                        },
+                    },
+                    "visualization": {
+                        "plot_image": (
+                            visualization_data.get("plot_image")
+                            if visualization_data
+                            else None
+                        ),
+                        "cluster_assignments": cluster_assignments,
+                        "cluster_colors": {
+                            str(i): get_cluster_color(i)
+                            for i in range(max(1, analysis_data.get("n_clusters", 1)))
+                        },
+                        "cluster_statistics": cluster_statistics,
+                        "evaluation_metrics": evaluation_metrics,
+                    },
+                    # トップレベルに直接配置（フロントエンド互換性のため）
+                    "cluster_assignments": cluster_assignments,
+                    "cluster_statistics": cluster_statistics,
+                    "evaluation_metrics": evaluation_metrics,
+                    "cluster_colors": {
+                        str(i): get_cluster_color(i)
+                        for i in range(max(1, analysis_data.get("n_clusters", 1)))
+                    },
+                    # 画像データも直接アクセス可能にする
+                    "plot_image": (
+                        visualization_data.get("plot_image")
+                        if visualization_data
+                        else None
+                    ),
+                },
+            }
+        else:
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": session_info,
+                    "metadata": metadata,
+                    "analysis_data": analysis_data,
+                    "visualization": visualization_data,
+                },
+            }
+
+        print(f"=== セッション詳細取得完了: {session_id} ===")
+
+        # デバッグ用：レスポンス構造をログ出力
+        if session.analysis_type == AnalysisTypes.CLUSTER:
+            print(f"🔍 CLUSTER DEBUG - Response Structure:")
+            print(
+                f"  - cluster_assignments count: {len(response_data['data'].get('cluster_assignments', []))}"
+            )
+            print(
+                f"  - visualization.cluster_assignments count: {len(response_data['data'].get('visualization', {}).get('cluster_assignments', []))}"
+            )
+            print(
+                f"  - analysis_data.cluster_assignments count: {len(response_data['data'].get('analysis_data', {}).get('cluster_assignments', []))}"
+            )
+            print(
+                f"  - analysis_data.visualization.cluster_assignments count: {len(response_data['data'].get('analysis_data', {}).get('visualization', {}).get('cluster_assignments', []))}"
             )
 
-        # analysis_typeを安全に取得
-        analysis_type = getattr(session, "analysis_type", "correspondence")
-        print(f"Loading session {session_id} of type: {analysis_type}")
+            # レスポンスのキー構造も確認
+            print(f"  - Top-level data keys: {list(response_data['data'].keys())}")
+            if "visualization" in response_data["data"]:
+                print(
+                    f"  - Visualization keys: {list(response_data['data']['visualization'].keys())}"
+                )
+            if (
+                "analysis_data" in response_data["data"]
+                and "visualization" in response_data["data"]["analysis_data"]
+            ):
+                print(
+                    f"  - Analysis_data.visualization keys: {list(response_data['data']['analysis_data']['visualization'].keys())}"
+                )
 
-        # 関連データを取得
-        coordinates = (
-            db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .all()
+        return response_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"セッション詳細取得エラー: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=f"セッション詳細の取得に失敗しました: {str(e)}"
         )
-        eigenvalues = (
-            db.query(EigenvalueData)
-            .filter(EigenvalueData.session_id == session_id)
-            .all()
-        )
-        visualization = (
-            db.query(VisualizationData)
-            .filter(VisualizationData.session_id == session_id)
-            .first()
-        )
+
+
+async def get_cluster_analysis_data(
+    db: Session, session_id: int, session: AnalysisSession
+) -> Dict[str, Any]:
+    """クラスター分析の詳細データを取得"""
+    try:
+        print(f"=== クラスター分析データ取得開始: {session_id} ===")
 
         # メタデータを取得
         metadata_entries = (
@@ -341,186 +261,312 @@ async def get_analysis_session(
             .filter(AnalysisMetadata.session_id == session_id)
             .all()
         )
-        metadata_dict = {}
+
+        cluster_metrics = {}
+        cluster_statistics = {}
 
         for metadata in metadata_entries:
-            metadata_dict[metadata.metadata_type] = metadata.metadata_content
+            if metadata.metadata_type == "cluster_metrics":
+                cluster_metrics = metadata.metadata_content
+                print(f"クラスター評価指標取得: {cluster_metrics}")
+            elif metadata.metadata_type == "cluster_statistics":
+                cluster_statistics = metadata.metadata_content
+                print(f"クラスター統計取得: {len(cluster_statistics)} clusters")
 
-        # 座標データを整理
-        row_coords = []
-        col_coords = []
-        variable_coords = []  # PCA・因子分析用
-        observation_coords = []  # PCA・因子分析・クラスター分析用
+        # 座標データ（クラスター割り当て）を取得
+        coordinates = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
+        )
+
+        cluster_assignments = []
+        cluster_labels = []
 
         for coord in coordinates:
-            coord_data = {
-                "name": getattr(coord, "point_name", "Unknown"),
-                "dimension_1": float(getattr(coord, "dimension_1", 0)),
-                "dimension_2": float(getattr(coord, "dimension_2", 0)),
-            }
-
-            # point_typeを安全に判定
-            point_type = getattr(coord, "point_type", None)
-            if point_type == "row":
-                row_coords.append(coord_data)
-            elif point_type == "column":
-                col_coords.append(coord_data)
-            elif point_type == "variable":
-                variable_coords.append(coord_data)
-            elif point_type == "observation":
-                observation_coords.append(coord_data)
-            else:
-                # フォールバック: インデックスで判定
-                coord_index = coordinates.index(coord)
-                if coord_index < len(coordinates) // 2:
-                    row_coords.append(coord_data)
-                else:
-                    col_coords.append(coord_data)
-
-        # 固有値データを整理
-        eigenvalue_data = []
-        for eigenval in sorted(eigenvalues, key=lambda x: x.dimension_number):
-            eigenvalue_data.append(
-                {
-                    "dimension": eigenval.dimension_number,
-                    "eigenvalue": (
-                        float(eigenval.eigenvalue) if eigenval.eigenvalue else 0
-                    ),
-                    "explained_inertia": (
-                        float(eigenval.explained_inertia)
-                        if eigenval.explained_inertia
-                        else 0
-                    ),
-                    "cumulative_inertia": (
-                        float(eigenval.cumulative_inertia)
-                        if eigenval.cumulative_inertia
-                        else 0
-                    ),
-                }
-            )
-
-        result = {
-            "success": True,
-            "session_info": {
-                "session_id": session.id,
-                "session_name": session.session_name,
-                "filename": session.original_filename,
-                "description": session.description,
-                "tags": session.tags or [],
-                "analysis_timestamp": session.analysis_timestamp.isoformat(),
-                "user_id": session.user_id,
-                "analysis_type": analysis_type,
-            },
-            "analysis_data": {
-                "total_inertia": (
-                    float(session.total_inertia) if session.total_inertia else None
-                ),
-                "chi2": (
-                    float(getattr(session, "chi2_value", 0))
-                    if hasattr(session, "chi2_value") and getattr(session, "chi2_value")
-                    else None
-                ),
-                "degrees_of_freedom": getattr(session, "degrees_of_freedom", None),
-                "dimensions_count": len(eigenvalue_data),
-                "eigenvalues": eigenvalue_data,
-                "coordinates": {
-                    "rows": row_coords,
-                    "columns": col_coords,
-                    "variables": variable_coords,
-                    "observations": observation_coords,
-                },
-                # 分析手法固有のデータ
-                "metadata": metadata_dict,
-            },
-            "metadata": {
-                "row_count": session.row_count,
-                "column_count": session.column_count,
-                "file_size": getattr(session, "file_size", None),
-                "analysis_type": analysis_type,
-            },
-            "visualization": {
-                "plot_image": (
-                    getattr(visualization, "image_base64", None)
-                    if visualization
-                    else None
-                ),
-                "image_info": (
+            if coord.point_type == "observation":  # クラスター分析では観測値として保存
+                cluster_id = (
+                    int(coord.dimension_1) if coord.dimension_1 is not None else 0
+                )
+                cluster_assignments.append(
                     {
-                        "width": (
-                            getattr(visualization, "width", None)
-                            if visualization
-                            else None
-                        ),
-                        "height": (
-                            getattr(visualization, "height", None)
-                            if visualization
-                            else None
-                        ),
-                        "size_bytes": (
-                            getattr(visualization, "image_size", None)
-                            if visualization
-                            else None
-                        ),
+                        "sample_name": coord.point_name,
+                        "cluster_id": cluster_id,
+                        "cluster_label": f"クラスター {cluster_id + 1}",
+                        "color": get_cluster_color(cluster_id),
                     }
-                    if visualization
-                    else None
-                ),
+                )
+                cluster_labels.append(cluster_id)
+
+        print(f"クラスター割り当て: {len(cluster_assignments)} samples")
+
+        # 実際のクラスター数を計算
+        actual_n_clusters = len(set(cluster_labels)) if cluster_labels else 0
+
+        # 評価指標を統一
+        evaluation_metrics = {
+            "silhouette_score": cluster_metrics.get(
+                "silhouette_score",
+                float(session.chi2_value) if session.chi2_value else 0.0,
+            ),
+            "calinski_harabasz_score": cluster_metrics.get(
+                "calinski_harabasz_score", 0.0
+            ),
+            "davies_bouldin_score": cluster_metrics.get("davies_bouldin_score", 0.0),
+            "inertia": cluster_metrics.get(
+                "inertia",
+                float(session.total_inertia) if session.total_inertia else 0.0,
+            ),
+            "n_clusters": cluster_metrics.get("n_clusters", actual_n_clusters),
+            "method": cluster_metrics.get("method", "kmeans"),
+        }
+
+        # セッション情報からの基本データ
+        analysis_data = {
+            "method": evaluation_metrics["method"],
+            "n_clusters": evaluation_metrics["n_clusters"],
+            "total_inertia": evaluation_metrics["inertia"],
+            "silhouette_score": evaluation_metrics["silhouette_score"],
+            "calinski_harabasz_score": evaluation_metrics["calinski_harabasz_score"],
+            "davies_bouldin_score": evaluation_metrics["davies_bouldin_score"],
+            "cluster_labels": cluster_labels,
+            "cluster_assignments": cluster_assignments,
+            "cluster_statistics": cluster_statistics,
+            "evaluation_metrics": evaluation_metrics,
+            # 可視化データも analysis_data に含める
+            "visualization": {
+                "cluster_assignments": cluster_assignments,
+                "cluster_colors": {
+                    str(i): get_cluster_color(i)
+                    for i in range(max(1, evaluation_metrics["n_clusters"]))
+                },
+                "cluster_statistics": cluster_statistics,
+                "evaluation_metrics": evaluation_metrics,
             },
         }
 
-        return result
+        print(f"=== クラスター分析データ取得完了: session_id={session_id} ===")
+        print(
+            f"取得データ概要: {analysis_data['n_clusters']}クラスター, {len(cluster_assignments)}サンプル"
+        )
+        print(f"評価指標: シルエット={analysis_data['silhouette_score']:.4f}")
+        print(f"クラスター割り当て数: {len(analysis_data['cluster_assignments'])}")
+        return analysis_data
 
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"Get session error: {str(e)}")
+        print(f"クラスター分析データ取得エラー: {str(e)}")
         import traceback
 
         traceback.print_exc()
+        return {}
 
-        raise HTTPException(
-            status_code=500, detail=f"セッション取得中にエラーが発生しました: {str(e)}"
+
+def get_cluster_color(cluster_id: int) -> str:
+    """クラスターIDに対応する色を取得"""
+    color_palette = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+        "#bcbd22",
+        "#17becf",
+    ]
+    return color_palette[cluster_id % len(color_palette)]
+
+
+async def get_correspondence_analysis_data(
+    db: Session, session_id: int, session: AnalysisSession
+) -> Dict[str, Any]:
+    """コレスポンデンス分析の詳細データを取得"""
+    try:
+        # 座標データを取得
+        coordinates = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
         )
 
+        row_coordinates = []
+        column_coordinates = []
 
-@router.get("/analysis-types")
-async def get_analysis_types():
-    """利用可能な分析手法一覧を取得"""
-    return {
-        "analysis_types": [
-            {
-                "id": AnalysisTypes.CORRESPONDENCE,
-                "name": "コレスポンデンス分析",
-                "description": "カテゴリカルデータの関係性を可視化",
-            },
-            {
-                "id": AnalysisTypes.PCA,
-                "name": "主成分分析",
-                "description": "多次元データの次元削減と可視化",
-            },
-            {
-                "id": AnalysisTypes.FACTOR,
-                "name": "因子分析",
-                "description": "潜在的な因子構造を発見",
-            },
-            {
-                "id": AnalysisTypes.CLUSTER,
-                "name": "クラスター分析",
-                "description": "データをグループに分類",
-            },
-        ]
-    }
+        for coord in coordinates:
+            coord_data = {
+                "name": coord.point_name,
+                "dim1": float(coord.dimension_1) if coord.dimension_1 else 0.0,
+                "dim2": float(coord.dimension_2) if coord.dimension_2 else 0.0,
+            }
+
+            if coord.point_type == "row":
+                row_coordinates.append(coord_data)
+            elif coord.point_type == "column":
+                column_coordinates.append(coord_data)
+
+        # 固有値データを取得
+        eigenvalues = (
+            db.query(EigenvalueData)
+            .filter(EigenvalueData.session_id == session_id)
+            .order_by(EigenvalueData.dimension_number)
+            .all()
+        )
+
+        eigenvalue_data = []
+        explained_variance = []
+        cumulative_variance = []
+
+        for eigenval in eigenvalues:
+            eigenvalue_data.append(
+                float(eigenval.eigenvalue) if eigenval.eigenvalue else 0.0
+            )
+            explained_variance.append(
+                float(eigenval.explained_inertia) if eigenval.explained_inertia else 0.0
+            )
+            cumulative_variance.append(
+                float(eigenval.cumulative_inertia)
+                if eigenval.cumulative_inertia
+                else 0.0
+            )
+
+        return {
+            "chi2_statistic": float(session.chi2_value) if session.chi2_value else 0.0,
+            "degrees_of_freedom": session.degrees_of_freedom,
+            "total_inertia": (
+                float(session.total_inertia) if session.total_inertia else 0.0
+            ),
+            "eigenvalues": eigenvalue_data,
+            "explained_variance_ratio": explained_variance,
+            "cumulative_variance_ratio": cumulative_variance,
+            "row_coordinates": row_coordinates,
+            "column_coordinates": column_coordinates,
+        }
+
+    except Exception as e:
+        print(f"コレスポンデンス分析データ取得エラー: {str(e)}")
+        return {}
 
 
-@router.put("/{session_id}")
-async def update_session(
-    session_id: int,
-    session_name: Optional[str] = None,
-    description: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    db: Session = Depends(get_db),
-):
-    """セッション情報を更新"""
+async def get_pca_analysis_data(
+    db: Session, session_id: int, session: AnalysisSession
+) -> Dict[str, Any]:
+    """PCA分析の詳細データを取得"""
+    try:
+        # 座標データを取得
+        coordinates = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
+        )
+
+        component_scores = []
+        loadings = []
+        sample_names = []
+        feature_names = []
+
+        for coord in coordinates:
+            if coord.point_type == "observation":
+                component_scores.append(
+                    [
+                        float(coord.dimension_1) if coord.dimension_1 else 0.0,
+                        float(coord.dimension_2) if coord.dimension_2 else 0.0,
+                    ]
+                )
+                sample_names.append(coord.point_name)
+            elif coord.point_type == "variable":
+                loadings.append(
+                    [
+                        float(coord.dimension_1) if coord.dimension_1 else 0.0,
+                        float(coord.dimension_2) if coord.dimension_2 else 0.0,
+                    ]
+                )
+                feature_names.append(coord.point_name)
+
+        # 固有値データを取得
+        eigenvalues = (
+            db.query(EigenvalueData)
+            .filter(EigenvalueData.session_id == session_id)
+            .order_by(EigenvalueData.dimension_number)
+            .all()
+        )
+
+        eigenvalue_data = []
+        explained_variance = []
+        cumulative_variance = []
+
+        for eigenval in eigenvalues:
+            eigenvalue_data.append(
+                float(eigenval.eigenvalue) if eigenval.eigenvalue else 0.0
+            )
+            explained_variance.append(
+                float(eigenval.explained_inertia) if eigenval.explained_inertia else 0.0
+            )
+            cumulative_variance.append(
+                float(eigenval.cumulative_inertia)
+                if eigenval.cumulative_inertia
+                else 0.0
+            )
+
+        return {
+            "kmo": (
+                float(session.chi2_value) if session.chi2_value else 0.0
+            ),  # PCAの場合はKMO値
+            "n_components": session.degrees_of_freedom,
+            "total_variance": (
+                float(session.total_inertia) if session.total_inertia else 0.0
+            ),
+            "eigenvalues": eigenvalue_data,
+            "explained_variance_ratio": explained_variance,
+            "cumulative_variance_ratio": cumulative_variance,
+            "component_scores": component_scores,
+            "loadings": loadings,
+            "sample_names": sample_names,
+            "feature_names": feature_names,
+        }
+
+    except Exception as e:
+        print(f"PCA分析データ取得エラー: {str(e)}")
+        return {}
+
+
+async def get_factor_analysis_data(
+    db: Session, session_id: int, session: AnalysisSession
+) -> Dict[str, Any]:
+    """因子分析の詳細データを取得（将来の実装用）"""
+    try:
+        return {}
+    except Exception as e:
+        print(f"因子分析データ取得エラー: {str(e)}")
+        return {}
+
+
+def get_visualization_data(db: Session, session_id: int) -> Optional[Dict[str, Any]]:
+    """可視化データを取得"""
+    try:
+        visualization = (
+            db.query(VisualizationData)
+            .filter(VisualizationData.session_id == session_id)
+            .first()
+        )
+
+        if visualization and visualization.image_base64:
+            return {
+                "plot_image": visualization.image_base64,
+                "width": visualization.width,
+                "height": visualization.height,
+            }
+
+        return None
+
+    except Exception as e:
+        print(f"可視化データ取得エラー: {str(e)}")
+        return None
+
+
+@router.delete("/{session_id}")
+async def delete_session(session_id: int, db: Session = Depends(get_db)):
+    """セッションを削除"""
     try:
         session = (
             db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
@@ -528,146 +574,58 @@ async def update_session(
         if not session:
             raise HTTPException(status_code=404, detail="セッションが見つかりません")
 
-        # 更新
-        if session_name is not None:
-            session.session_name = session_name
-        if description is not None:
-            session.description = description
-        if tags is not None:
-            session.tags = tags
+        # 関連データも削除
+        db.query(OriginalData).filter(OriginalData.session_id == session_id).delete()
+        db.query(CoordinatesData).filter(
+            CoordinatesData.session_id == session_id
+        ).delete()
+        db.query(EigenvalueData).filter(
+            EigenvalueData.session_id == session_id
+        ).delete()
+        db.query(VisualizationData).filter(
+            VisualizationData.session_id == session_id
+        ).delete()
+        db.query(AnalysisMetadata).filter(
+            AnalysisMetadata.session_id == session_id
+        ).delete()
 
+        db.delete(session)
         db.commit()
 
-        return {
-            "message": f"セッション {session_id} を更新しました",
-            "session": {
-                "id": session.id,
-                "session_name": session.session_name,
-                "description": session.description,
-                "tags": session.tags,
-            },
-        }
+        return {"success": True, "message": "セッションが削除されました"}
 
     except HTTPException:
         raise
     except Exception as e:
+        print(f"セッション削除エラー: {str(e)}")
         db.rollback()
         raise HTTPException(
-            status_code=500, detail=f"セッション更新中にエラーが発生しました: {str(e)}"
+            status_code=500, detail=f"セッションの削除に失敗しました: {str(e)}"
         )
 
 
-@router.get("/{session_id}/original-data")
-async def get_original_data(session_id: int, db: Session = Depends(get_db)):
-    """元データを取得"""
+@router.get("/{session_id}/csv")
+async def download_session_csv(session_id: int, db: Session = Depends(get_db)):
+    """セッションの元データをCSV形式でダウンロード"""
     try:
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
-
         original_data = (
             db.query(OriginalData).filter(OriginalData.session_id == session_id).first()
         )
         if not original_data:
             raise HTTPException(status_code=404, detail="元データが見つかりません")
 
-        return {
-            "session_id": session_id,
-            "csv_data": original_data.csv_data,
-            "row_names": original_data.row_names,
-            "column_names": original_data.column_names,
-            "data_matrix": original_data.data_matrix,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"元データ取得中にエラーが発生しました: {str(e)}"
-        )
-
-
-@router.get("/{session_id}/csv")
-async def download_original_csv(
-    session_id: int = Path(..., description="セッションID"),
-    db: Session = Depends(get_db),
-):
-    """セッションの元CSVファイルをダウンロード"""
-    try:
-        print(f"Fetching CSV for session: {session_id}")
-
-        # セッションの存在確認
         session = (
             db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
         )
-        if not session:
-            raise HTTPException(
-                status_code=404, detail="指定されたセッションが見つかりません"
-            )
 
-        # 元データを取得
-        original_data = (
-            db.query(OriginalData).filter(OriginalData.session_id == session_id).first()
+        filename = (
+            f"{session.original_filename}"
+            if session
+            else f"session_{session_id}_data.csv"
         )
-        if not original_data:
-            raise HTTPException(status_code=404, detail="元のCSVデータが見つかりません")
 
-        print(f"Original data found, checking attributes...")
-
-        # CSVデータを安全に取得
-        csv_content = None
-
-        # 1. csv_dataフィールドを優先
-        if hasattr(original_data, "csv_data") and original_data.csv_data:
-            print("Found csv_data field")
-            csv_content = original_data.csv_data
-        # 2. data_matrixから復元
-        elif hasattr(original_data, "data_matrix") and original_data.data_matrix:
-            try:
-                print("Attempting to reconstruct from data_matrix...")
-                df = pd.DataFrame(original_data.data_matrix)
-
-                # 行名・列名を設定
-                if hasattr(original_data, "row_names") and original_data.row_names:
-                    df.index = original_data.row_names
-                if (
-                    hasattr(original_data, "column_names")
-                    and original_data.column_names
-                ):
-                    df.columns = original_data.column_names
-
-                # CSVとして出力
-                output = io.StringIO()
-                df.to_csv(output, encoding="utf-8")
-                csv_content = output.getvalue()
-                output.close()
-                print("Successfully reconstructed CSV from data_matrix")
-
-            except Exception as matrix_error:
-                print(f"Failed to reconstruct from data_matrix: {matrix_error}")
-
-        # CSVコンテンツが取得できない場合
-        if not csv_content:
-            raise HTTPException(
-                status_code=404, detail="CSVデータを復元できませんでした"
-            )
-
-        # ファイル名を設定
-        filename = getattr(
-            session, "original_filename", f"session_{session_id}_data.csv"
-        )
-        if not filename.endswith(".csv"):
-            filename += ".csv"
-
-        print(f"Returning CSV file: {filename}")
-        return Response(
-            content=(
-                csv_content.encode("utf-8-sig")
-                if isinstance(csv_content, str)
-                else csv_content
-            ),
+        return StreamingResponse(
+            io.StringIO(original_data.csv_data),
             media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
@@ -675,77 +633,51 @@ async def download_original_csv(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"CSV download error: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+        print(f"CSV出力エラー: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"CSVダウンロード中にエラーが発生しました: {str(e)}"
+            status_code=500, detail=f"CSV出力中にエラーが発生しました: {str(e)}"
         )
 
 
 @router.get("/{session_id}/image")
-async def download_plot_image(
-    session_id: int = Path(..., description="セッションID"),
-    db: Session = Depends(get_db),
-):
+async def download_session_image(session_id: int, db: Session = Depends(get_db)):
     """セッションのプロット画像をダウンロード"""
     try:
-        print(f"Fetching image for session: {session_id}")
+        print(f"画像ダウンロード要求: session_id={session_id}")
 
-        # セッションの存在確認
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(
-                status_code=404, detail="指定されたセッションが見つかりません"
-            )
-
-        # 可視化データを取得
-        visualization_data = (
+        visualization = (
             db.query(VisualizationData)
             .filter(VisualizationData.session_id == session_id)
             .first()
         )
 
-        if not visualization_data:
+        if not visualization or not visualization.image_base64:
+            print(f"画像データが見つかりません: session_id={session_id}")
             raise HTTPException(status_code=404, detail="プロット画像が見つかりません")
 
-        print(f"Visualization data found, checking attributes...")
+        # Base64データをデコード
+        try:
+            image_data = base64.b64decode(visualization.image_base64)
+            print(f"画像データデコード成功: {len(image_data)} bytes")
+        except Exception as decode_error:
+            print(f"Base64デコードエラー: {decode_error}")
+            raise HTTPException(
+                status_code=500, detail="画像データの読み込みに失敗しました"
+            )
 
-        # 画像データを安全に取得
-        image_data = None
+        # セッション情報を取得してファイル名を決定
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
 
-        # 1. image_dataフィールドを優先
-        if hasattr(visualization_data, "image_data") and visualization_data.image_data:
-            print("Found image_data field (binary)")
-            image_data = visualization_data.image_data
-        # 2. image_base64フィールド
-        elif (
-            hasattr(visualization_data, "image_base64")
-            and visualization_data.image_base64
-        ):
-            print("Found image_base64 field")
-            try:
-                base64_data = visualization_data.image_base64
-                if base64_data.startswith("data:image/"):
-                    base64_data = base64_data.split(",")[1]
-                image_data = base64.b64decode(base64_data)
-                print("Successfully decoded base64 image data")
-            except Exception as decode_error:
-                print(f"Base64 decode error: {decode_error}")
+        if session:
+            analysis_type = session.analysis_type or "analysis"
+            filename = f"{analysis_type}_plot_{session_id}.png"
+        else:
+            filename = f"plot_{session_id}.png"
 
-        if not image_data:
-            raise HTTPException(status_code=404, detail="画像データが見つかりません")
-
-        # 分析タイプに応じたファイル名設定
-        analysis_type = getattr(session, "analysis_type", "analysis")
-        filename = f"{analysis_type}_{session_id}_plot.png"
-
-        print(f"Returning image file: {filename}")
-        return Response(
-            content=image_data,
+        return StreamingResponse(
+            io.BytesIO(image_data),
             media_type="image/png",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
@@ -753,367 +685,230 @@ async def download_plot_image(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Image download error: {str(e)}")
+        print(f"画像出力エラー: {str(e)}")
         import traceback
 
         traceback.print_exc()
         raise HTTPException(
-            status_code=500,
-            detail=f"画像ダウンロード中にエラーが発生しました: {str(e)}",
+            status_code=500, detail=f"画像出力中にエラーが発生しました: {str(e)}"
         )
 
 
 @router.get("/{session_id}/analysis-csv")
-async def download_analysis_results_csv(
-    session_id: int = Path(..., description="セッションID"),
-    db: Session = Depends(get_db),
-):
-    """分析結果の詳細データをCSV形式でダウンロード"""
+async def download_analysis_csv(session_id: int, db: Session = Depends(get_db)):
+    """分析結果詳細をCSV形式でダウンロード"""
     try:
-        print(f"Generating analysis CSV for session: {session_id}")
+        print(f"分析結果CSV出力開始: session_id={session_id}")
 
-        # セッションの存在確認
         session = (
             db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
         )
         if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        # 分析タイプ別のCSV生成
+        if session.analysis_type == AnalysisTypes.CLUSTER:
+            csv_content = await generate_cluster_analysis_csv(db, session_id, session)
+        elif session.analysis_type == AnalysisTypes.CORRESPONDENCE:
+            csv_content = await generate_correspondence_analysis_csv(
+                db, session_id, session
+            )
+        elif session.analysis_type == AnalysisTypes.PCA:
+            csv_content = await generate_pca_analysis_csv(db, session_id, session)
+        else:
             raise HTTPException(
-                status_code=404, detail="指定されたセッションが見つかりません"
+                status_code=400, detail="サポートされていない分析タイプです"
             )
 
-        analysis_type = getattr(session, "analysis_type", "correspondence")
-        print(f"Generating {analysis_type} analysis CSV")
+        filename = f"{session.analysis_type}_analysis_results_{session_id}.csv"
 
-        # 関連データを取得
-        coordinates_data = (
-            db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .all()
-        )
-        eigenvalue_data = (
-            db.query(EigenvalueData)
-            .filter(EigenvalueData.session_id == session_id)
-            .all()
-        )
-
-        # メタデータを取得
-        metadata_entries = (
-            db.query(AnalysisMetadata)
-            .filter(AnalysisMetadata.session_id == session_id)
-            .all()
-        )
-
-        print(f"Found {len(coordinates_data)} coordinate records")
-        print(f"Found {len(eigenvalue_data)} eigenvalue records")
-        print(f"Found {len(metadata_entries)} metadata records")
-
-        output = io.StringIO()
-
-        # ヘッダー情報
-        analysis_names = {
-            "factor": "因子分析結果",
-            "pca": "主成分分析結果",
-            "cluster": "クラスター分析結果",
-            "correspondence": "コレスポンデンス分析結果",
-        }
-
-        output.write(f"{analysis_names.get(analysis_type, 'データ分析結果')}\n")
-        output.write(f"セッション名,{session.session_name}\n")
-        output.write(f"ファイル名,{getattr(session, 'original_filename', 'unknown')}\n")
-        output.write(
-            f"分析日時,{session.analysis_timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        )
-        output.write(f"データサイズ,{session.row_count}行 × {session.column_count}列\n")
-        output.write(f"分析タイプ,{analysis_type}\n")
-
-        if hasattr(session, "total_inertia") and session.total_inertia:
-            if analysis_type == "factor":
-                output.write(f"総分散説明率,{session.total_inertia:.6f}\n")
-            else:
-                output.write(f"総慣性,{session.total_inertia:.6f}\n")
-
-        if hasattr(session, "chi2_value") and getattr(session, "chi2_value", None):
-            if analysis_type == "correspondence":
-                output.write(f"カイ二乗値,{session.chi2_value:.6f}\n")
-            elif analysis_type == "pca":
-                output.write(f"KMO値,{session.chi2_value:.6f}\n")
-            elif analysis_type == "cluster":
-                output.write(f"シルエットスコア,{session.chi2_value:.6f}\n")
-            elif analysis_type == "factor":
-                output.write(f"総分散説明率,{session.chi2_value:.6f}\n")
-
-        if hasattr(session, "degrees_of_freedom") and getattr(
-            session, "degrees_of_freedom", None
-        ):
-            if analysis_type == "correspondence":
-                output.write(f"自由度,{session.degrees_of_freedom}\n")
-            elif analysis_type == "pca":
-                output.write(f"主成分数,{session.degrees_of_freedom}\n")
-            elif analysis_type == "cluster":
-                output.write(f"クラスター数,{session.degrees_of_freedom}\n")
-            elif analysis_type == "factor":
-                output.write(f"因子数,{session.degrees_of_freedom}\n")
-        output.write("\n")
-
-        # 固有値データのセクション
-        if eigenvalue_data:
-            dimension_labels = {
-                "factor": ("因子別情報", "因子,固有値,寄与率(%),累積寄与率(%)", "因子"),
-                "pca": (
-                    "主成分別情報",
-                    "主成分,固有値,寄与率(%),累積寄与率(%)",
-                    "第{0}主成分",
-                ),
-                "cluster": (
-                    "クラスター別情報",
-                    "クラスター,慣性,寄与率(%),累積寄与率(%)",
-                    "クラスター",
-                ),
-                "correspondence": (
-                    "次元別情報",
-                    "次元,固有値,寄与率(%),累積寄与率(%)",
-                    "第{0}次元",
-                ),
-            }
-
-            section_title, header_row, label_format = dimension_labels.get(
-                analysis_type, dimension_labels["correspondence"]
-            )
-
-            output.write(f"{section_title}\n")
-            output.write(f"{header_row}\n")
-
-            eigenvalue_data_sorted = sorted(
-                eigenvalue_data, key=lambda x: x.dimension_number
-            )
-            for ev in eigenvalue_data_sorted:
-                eigenvalue = ev.eigenvalue if ev.eigenvalue else 0
-                explained_inertia = ev.explained_inertia if ev.explained_inertia else 0
-                cumulative_inertia = (
-                    ev.cumulative_inertia if ev.cumulative_inertia else 0
-                )
-
-                if analysis_type == "factor":
-                    label = f"因子{ev.dimension_number}"
-                elif analysis_type == "pca":
-                    label = f"第{ev.dimension_number}主成分"
-                elif analysis_type == "cluster":
-                    label = f"クラスター{ev.dimension_number}"
-                else:
-                    label = f"第{ev.dimension_number}次元"
-
-                output.write(
-                    f"{label},{eigenvalue:.8f},{explained_inertia*100:.2f},{cumulative_inertia*100:.2f}\n"
-                )
-            output.write("\n")
-
-        # 分析手法固有のメタデータ出力
-        if metadata_entries:
-            for metadata in metadata_entries:
-                metadata_type = getattr(metadata, "metadata_type", "")
-                metadata_content = getattr(metadata, "metadata_content", {})
-
-                if analysis_type == "factor" and metadata_type == "factor_loadings":
-                    output.write("因子負荷量\n")
-                    loadings = metadata_content.get("loadings", [])
-                    feature_names = metadata_content.get("feature_names", [])
-                    n_factors = metadata_content.get("n_factors", 0)
-
-                    # ヘッダー
-                    header = (
-                        "変数,"
-                        + ",".join([f"因子{i+1}" for i in range(n_factors)])
-                        + ",共通性\n"
-                    )
-                    output.write(header)
-
-                    # データ
-                    communalities = metadata_content.get("communalities", [])
-                    for i, feature in enumerate(feature_names):
-                        if i < len(loadings):
-                            loading_values = ",".join(
-                                [f"{val:.3f}" for val in loadings[i]]
-                            )
-                            communality = (
-                                communalities[i] if i < len(communalities) else 0
-                            )
-                            output.write(
-                                f"{feature},{loading_values},{communality:.3f}\n"
-                            )
-                    output.write("\n")
-
-                elif (
-                    analysis_type == "cluster" and metadata_type == "cluster_statistics"
-                ):
-                    output.write("クラスター統計情報\n")
-                    for cluster_key, cluster_info in metadata_content.items():
-                        output.write(
-                            f"\n{cluster_key} (サイズ: {cluster_info['size']})\n"
-                        )
-                        output.write(
-                            f"メンバー: {', '.join(cluster_info.get('members', []))}\n"
-                        )
-
-                        if cluster_info.get("mean"):
-                            output.write("変数,平均,標準偏差,最小値,最大値\n")
-                            for var_name in cluster_info["mean"].keys():
-                                output.write(
-                                    f"{var_name},"
-                                    f"{cluster_info['mean'].get(var_name, 'N/A'):.4f},"
-                                    f"{cluster_info['std'].get(var_name, 'N/A'):.4f},"
-                                    f"{cluster_info['min'].get(var_name, 'N/A'):.4f},"
-                                    f"{cluster_info['max'].get(var_name, 'N/A'):.4f}\n"
-                                )
-                    output.write("\n")
-
-        # 座標データの処理
-        if coordinates_data:
-            # 座標データを分析タイプに応じて分類
-            row_coordinates = []
-            col_coordinates = []
-            variable_coordinates = []  # PCA・因子分析用
-            observation_coordinates = []  # PCA・因子分析・クラスター分析用
-
-            for coord in coordinates_data:
-                # 座標データを安全に取得
-                coord_info = {
-                    "name": getattr(coord, "point_name", "Unknown"),
-                    "dimension_1": float(getattr(coord, "dimension_1", 0)),
-                    "dimension_2": float(getattr(coord, "dimension_2", 0)),
-                    "point_type": getattr(coord, "point_type", None),
-                }
-
-                # point_typeで分類
-                if coord_info["point_type"] == "row":
-                    row_coordinates.append(coord_info)
-                elif coord_info["point_type"] == "column":
-                    col_coordinates.append(coord_info)
-                elif coord_info["point_type"] == "variable":
-                    variable_coordinates.append(coord_info)
-                elif coord_info["point_type"] == "observation":
-                    observation_coordinates.append(coord_info)
-                else:
-                    # フォールバック: インデックスで判定
-                    coord_index = coordinates_data.index(coord)
-                    if analysis_type in ["factor", "pca"]:
-                        # 因子分析・PCAの場合
-                        if coord_index < len(coordinates_data) // 2:
-                            variable_coordinates.append(coord_info)
-                        else:
-                            observation_coordinates.append(coord_info)
-                    else:
-                        # コレスポンデンス分析の場合
-                        if coord_index < len(coordinates_data) // 2:
-                            row_coordinates.append(coord_info)
-                        else:
-                            col_coordinates.append(coord_info)
-
-            # 分析タイプに応じて座標データを出力
-            if analysis_type == "factor":
-                # 因子分析の場合
-                if variable_coordinates:
-                    output.write("変数の因子得点\n")
-                    output.write("変数名,因子1,因子2\n")
-                    for coord in variable_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-                if observation_coordinates:
-                    output.write("観測値の因子得点\n")
-                    output.write("観測名,因子1,因子2\n")
-                    for coord in observation_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-            elif analysis_type == "pca":
-                # 主成分分析の場合
-                if variable_coordinates:
-                    output.write("変数の主成分負荷量\n")
-                    output.write("変数名,第1主成分,第2主成分\n")
-                    for coord in variable_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-                if observation_coordinates:
-                    output.write("観測値の主成分得点\n")
-                    output.write("観測名,第1主成分,第2主成分\n")
-                    for coord in observation_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-            elif analysis_type == "cluster":
-                # クラスター分析の場合
-                if observation_coordinates:
-                    output.write("クラスター割り当て結果\n")
-                    output.write("サンプル名,クラスターID,クラスターラベル\n")
-                    for coord in observation_coordinates:
-                        cluster_id = int(coord["dimension_1"])
-                        cluster_label = f"クラスター {cluster_id + 1}"
-                        output.write(f"{coord['name']},{cluster_id},{cluster_label}\n")
-                    output.write("\n")
-
-            else:
-                # コレスポンデンス分析の場合（デフォルト）
-                if row_coordinates:
-                    output.write("行座標（イメージ）\n")
-                    output.write("項目名,第1次元,第2次元\n")
-                    for coord in row_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-                if col_coordinates:
-                    output.write("列座標（ブランド）\n")
-                    output.write("項目名,第1次元,第2次元\n")
-                    for coord in col_coordinates:
-                        output.write(
-                            f"{coord['name']},{coord['dimension_1']:.8f},{coord['dimension_2']:.8f}\n"
-                        )
-                    output.write("\n")
-
-            print(
-                f"Processed coordinates: rows={len(row_coordinates)}, "
-                f"columns={len(col_coordinates)}, "
-                f"variables={len(variable_coordinates)}, "
-                f"observations={len(observation_coordinates)}"
-            )
-
-        # データが見つからない場合の処理
-        if not coordinates_data and not eigenvalue_data:
-            output.write("座標データおよび固有値データが見つかりませんでした\n")
-            output.write("データベースの構造を確認してください\n")
-
-        csv_content = output.getvalue()
-        output.close()
-
-        # 分析タイプに応じたファイル名設定
-        filename = f"{analysis_type}_analysis_results_{session_id}.csv"
-
-        print(f"Generated analysis CSV: {filename} ({len(csv_content)} characters)")
-
-        return Response(
-            content=csv_content.encode("utf-8-sig"),
-            media_type="text/csv",
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Analysis CSV download error: {str(e)}")
+        print(f"分析結果CSV出力エラー: {str(e)}")
         import traceback
 
         traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=f"分析結果CSVダウンロード中にエラーが発生しました: {str(e)}",
+            detail=f"分析結果CSV出力中にエラーが発生しました: {str(e)}",
         )
+
+
+async def generate_cluster_analysis_csv(
+    db: Session, session_id: int, session: AnalysisSession
+) -> str:
+    """クラスター分析結果のCSVを生成"""
+    try:
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # ヘッダー情報
+        writer.writerow(["クラスター分析結果"])
+        writer.writerow(["セッション名", session.session_name])
+        writer.writerow(["ファイル名", session.original_filename])
+        writer.writerow(
+            ["分析日時", session.analysis_timestamp.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        writer.writerow(["サンプル数", session.row_count])
+        writer.writerow(["変数数", session.column_count])
+        writer.writerow([])
+
+        # メタデータから評価指標を取得
+        metadata_entries = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
+
+        # 評価指標
+        writer.writerow(["評価指標"])
+        writer.writerow(["指標", "値"])
+
+        metrics_found = False
+        cluster_statistics = {}
+
+        for metadata in metadata_entries:
+            if metadata.metadata_type == "cluster_metrics":
+                metrics_found = True
+                metrics = metadata.metadata_content
+                writer.writerow(
+                    [
+                        "シルエットスコア",
+                        f"{metrics.get('silhouette_score', 'N/A'):.4f}",
+                    ]
+                )
+                writer.writerow(
+                    [
+                        "Calinski-Harabasz指標",
+                        f"{metrics.get('calinski_harabasz_score', 'N/A'):.4f}",
+                    ]
+                )
+                writer.writerow(
+                    [
+                        "Davies-Bouldin指標",
+                        f"{metrics.get('davies_bouldin_score', 'N/A'):.4f}",
+                    ]
+                )
+                writer.writerow(["慣性", f"{metrics.get('inertia', 'N/A'):.4f}"])
+                writer.writerow(
+                    [
+                        "クラスター数",
+                        metrics.get("n_clusters", session.degrees_of_freedom),
+                    ]
+                )
+            elif metadata.metadata_type == "cluster_statistics":
+                cluster_statistics = metadata.metadata_content
+
+        if not metrics_found:
+            writer.writerow(
+                [
+                    "シルエットスコア",
+                    f"{float(session.chi2_value):.4f}" if session.chi2_value else "N/A",
+                ]
+            )
+            writer.writerow(["クラスター数", session.degrees_of_freedom])
+            writer.writerow(
+                [
+                    "総クラスター内平方和",
+                    (
+                        f"{float(session.total_inertia):.4f}"
+                        if session.total_inertia
+                        else "N/A"
+                    ),
+                ]
+            )
+
+        writer.writerow([])
+
+        # クラスター統計情報
+        if cluster_statistics:
+            writer.writerow(["クラスター統計"])
+            for cluster_key, cluster_info in cluster_statistics.items():
+                writer.writerow([f"{cluster_key} (サイズ: {cluster_info['size']})"])
+                writer.writerow(
+                    ["メンバー", ", ".join(cluster_info.get("members", []))]
+                )
+
+                if cluster_info.get("mean"):
+                    writer.writerow(["変数", "平均", "標準偏差", "最小値", "最大値"])
+                    for var_name in cluster_info["mean"].keys():
+                        mean_val = cluster_info["mean"].get(var_name, "N/A")
+                        std_val = cluster_info["std"].get(var_name, "N/A")
+                        min_val = cluster_info["min"].get(var_name, "N/A")
+                        max_val = cluster_info["max"].get(var_name, "N/A")
+
+                        writer.writerow(
+                            [
+                                var_name,
+                                (
+                                    f"{mean_val:.4f}"
+                                    if isinstance(mean_val, (int, float))
+                                    else str(mean_val)
+                                ),
+                                (
+                                    f"{std_val:.4f}"
+                                    if isinstance(std_val, (int, float))
+                                    else str(std_val)
+                                ),
+                                (
+                                    f"{min_val:.4f}"
+                                    if isinstance(min_val, (int, float))
+                                    else str(min_val)
+                                ),
+                                (
+                                    f"{max_val:.4f}"
+                                    if isinstance(max_val, (int, float))
+                                    else str(max_val)
+                                ),
+                            ]
+                        )
+                writer.writerow([])
+        writer.writerow([])
+
+        # クラスター割り当て結果
+        coordinates_data = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
+        )
+
+        if coordinates_data:
+            writer.writerow(["クラスター割り当て結果"])
+            writer.writerow(["サンプル名", "クラスターID", "クラスターラベル"])
+
+            for coord in coordinates_data:
+                if coord.point_type == "observation":
+                    cluster_id = (
+                        int(coord.dimension_1) if coord.dimension_1 is not None else 0
+                    )
+                    cluster_label = f"クラスター {cluster_id + 1}"
+                    writer.writerow([coord.point_name, cluster_id, cluster_label])
+
+        return output.getvalue()
+
+    except Exception as e:
+        print(f"クラスター分析CSV生成エラー: {str(e)}")
+        raise
+
+
+async def generate_correspondence_analysis_csv(
+    db: Session, session_id: int, session: AnalysisSession
+) -> str:
+    """コレスポンデンス分析結果のCSVを生成"""
+    # 既存の実装があればそれを使用、なければプレースホルダー
+    return "コレスポンデンス分析結果CSV（実装予定）"
+
+
+async def generate_pca_analysis_csv(
+    db: Session, session_id: int, session: AnalysisSession
+) -> str:
+    """PCA分析結果のCSVを生成"""
+    # 既存の実装があればそれを使用、なければプレースホルダー
+    return "PCA分析結果CSV（実装予定）"
