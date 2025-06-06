@@ -75,9 +75,10 @@ export default function CorrespondencePage() {
   };
 
   // 特定のセッションの詳細を取得
+  // 特定のセッションの詳細を取得
   const fetchSessionDetail = async (sessionId: number) => {
     try {
-      console.log('Fetching session details for:', sessionId);
+      console.log('🔍 コレスポンデンス分析セッション詳細取得開始:', sessionId);
       
       const response = await fetch(`/api/sessions/${sessionId}`);
       
@@ -90,39 +91,61 @@ export default function CorrespondencePage() {
       }
 
       const data: SessionDetailResponse = await response.json();
-      console.log('Received session data:', data);
+      console.log('📥 Session detail response:', data);
+      console.log('🔍 RAW DATA DUMP:');
+      console.log('Full data object:', JSON.stringify(data, null, 2));
 
       if (data.success && data.data) {
-        const pythonResponse = data.data;
+        // レスポンス構造の確認とネストした data の展開
+        console.log('🔍 DETAILED RESPONSE ANALYSIS:');
+        console.log('data keys:', Object.keys(data));
+        console.log('data.data keys:', Object.keys(data.data));
         
+        const pythonResponse = (data.data as any).success ? (data.data as any).data : data.data;
+        console.log('🔍 Using pythonResponse with keys:', Object.keys(pythonResponse));
+        console.log('pythonResponse keys:', Object.keys(pythonResponse));
+
+        // デバッグ: 座標データの確認
+        console.log('🔍 Coordinates debug:');
+        console.log('pythonResponse.coordinates:', pythonResponse.coordinates);
+        console.log('pythonResponse.analysis_data:', pythonResponse.analysis_data);
+
         // 型安全な変換処理
         const analysisResult: CorrespondenceAnalysisResult = {
           success: true,
           session_id: pythonResponse.session_info?.session_id || sessionId,
           session_name: pythonResponse.session_info?.session_name || '',
           analysis_type: 'correspondence',
-          plot_base64: pythonResponse.visualization?.plot_image || "", 
+          plot_base64: pythonResponse.visualization?.plot_image || pythonResponse.plot_image || "", 
           data: {
             total_inertia: pythonResponse.analysis_data?.total_inertia || 0,
-            chi2: pythonResponse.analysis_data?.chi2 || 0,
+            chi2: pythonResponse.analysis_data?.chi2_statistic || 0,
             degrees_of_freedom: pythonResponse.analysis_data?.degrees_of_freedom || 0,
-            n_components: 2,
-            eigenvalues: pythonResponse.analysis_data?.eigenvalues?.map(e => e.eigenvalue) || [],
-            explained_inertia: pythonResponse.analysis_data?.eigenvalues?.map(e => e.explained_inertia) || [],
-            cumulative_inertia: pythonResponse.analysis_data?.eigenvalues?.map(e => e.cumulative_inertia) || [],
-            plot_image: pythonResponse.visualization?.plot_image || "",
+            n_components: pythonResponse.analysis_data?.eigenvalues?.length || 2,
+            eigenvalues: pythonResponse.analysis_data?.eigenvalues || [],
+            explained_inertia: pythonResponse.analysis_data?.explained_variance_ratio || [],
+            cumulative_inertia: pythonResponse.analysis_data?.cumulative_variance_ratio || [],
+            plot_image: pythonResponse.visualization?.plot_image || pythonResponse.plot_image || "",
             coordinates: {
-              rows: pythonResponse.analysis_data?.coordinates?.rows || [],
-              columns: pythonResponse.analysis_data?.coordinates?.columns || []
+              rows: (pythonResponse.analysis_data?.row_coordinates || []).map((r: any) => ({
+                name: r.name,
+                dimension_1: r.dim1,
+                dimension_2: r.dim2
+              })),
+              columns: (pythonResponse.analysis_data?.column_coordinates || []).map((c: any) => ({
+                name: c.name,
+                dimension_1: c.dim1,
+                dimension_2: c.dim2
+              }))
             }
           },
           metadata: {
             session_name: pythonResponse.session_info?.session_name || '',
-            filename: pythonResponse.session_info?.filename || '',
+            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
             rows: pythonResponse.metadata?.row_count || 0,
             columns: pythonResponse.metadata?.column_count || 0,
-            row_names: pythonResponse.analysis_data?.coordinates?.rows?.map(r => r.name) || [],
-            column_names: pythonResponse.analysis_data?.coordinates?.columns?.map(c => c.name) || []
+            row_names: (pythonResponse.analysis_data?.row_coordinates || []).map((r: any) => r.name),
+            column_names: (pythonResponse.analysis_data?.column_coordinates || []).map((c: any) => c.name)
           },
           session_info: {
             session_id: pythonResponse.session_info?.session_id || sessionId,
@@ -130,15 +153,24 @@ export default function CorrespondencePage() {
             description: pythonResponse.session_info?.description || '',
             tags: pythonResponse.session_info?.tags || [],
             analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-            filename: pythonResponse.session_info?.filename || '',
+            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
             analysis_type: 'correspondence',
             row_count: pythonResponse.metadata?.row_count || 0,
             column_count: pythonResponse.metadata?.column_count || 0
           }
         };
 
+        console.log('📊 Building analysis result with data:', {
+          success: analysisResult.success,
+          session_id: analysisResult.session_id,
+          hasCoordinates: !!analysisResult.data.coordinates,
+          rowsCount: analysisResult.data.coordinates?.rows?.length || 0,
+          columnsCount: analysisResult.data.coordinates?.columns?.length || 0,
+          hasPlotImage: !!analysisResult.plot_base64
+        });
+
         setResult(analysisResult);
-        console.log('Session details loaded successfully');
+        console.log('✅ Correspondence session details loaded successfully');
         
       } else {
         console.error('Invalid response format:', data);

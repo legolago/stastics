@@ -2,7 +2,8 @@ from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # GUI無効化
+
+matplotlib.use("Agg")  # GUI無効化
 
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
@@ -46,31 +47,51 @@ class FactorAnalysisAnalyzer(BaseAnalyzer):
         results: Dict[str, Any],
         plot_base64: str,
     ) -> int:
-        """因子分析用のデータベース保存（カスタム実装）"""
         try:
             print("=== 因子分析データベース保存開始 ===")
 
-            # 基底クラスの共通保存メソッドを使用
-            session_id = super().save_to_database(
-                db,
-                session_name,
-                description,
-                tags,
-                user_id,
-                file,
-                csv_text,
-                df,
-                results,
-                plot_base64,
-            )
+            # ✅ 修正: 基底クラスのメソッド呼び出しを確認
+            # 基底クラス BaseAnalyzer に save_to_database メソッドが存在するか確認
+            if hasattr(super(), "save_to_database"):
+                session_id = super().save_to_database(
+                    db,
+                    session_name,
+                    description,
+                    tags,
+                    user_id,
+                    file,
+                    csv_text,
+                    df,
+                    results,
+                    plot_base64,
+                )
+            else:
+                # 基底クラスにメソッドがない場合の代替実装
+                print("⚠️ 基底クラスにsave_to_databaseメソッドがありません")
+                # 独自の保存処理を実装
+                session_id = self._save_session_directly(
+                    db,
+                    session_name,
+                    description,
+                    tags,
+                    user_id,
+                    file,
+                    csv_text,
+                    df,
+                    results,
+                    plot_base64,
+                )
 
             # 因子分析特有のデータを追加保存
             self._save_factor_specific_data(db, session_id, results)
 
+            # 座標データを保存
+            self._save_coordinates_data(db, session_id, df, results)
+
             return session_id
 
         except Exception as e:
-            print(f"因子分析データベース保存エラー: {str(e)}")
+            print(f"❌ 因子分析データベース保存エラー: {str(e)}")
             import traceback
 
             print(f"詳細:\n{traceback.format_exc()}")
@@ -116,6 +137,77 @@ class FactorAnalysisAnalyzer(BaseAnalyzer):
 
         except Exception as e:
             print(f"因子分析特有データ保存エラー: {e}")
+
+    def _save_session_directly(
+        self,
+        db: Session,
+        session_name: str,
+        description: Optional[str],
+        tags: List[str],
+        user_id: str,
+        file,
+        csv_text: str,
+        df: pd.DataFrame,
+        results: Dict[str, Any],
+        plot_base64: str,
+    ) -> int:
+        """基底クラスのメソッドがない場合の直接保存"""
+        try:
+            from models import AnalysisSession, VisualizationData
+
+            # セッション基本情報を保存
+            session = AnalysisSession(
+                session_name=session_name,
+                description=description,
+                analysis_type=self.get_analysis_type(),
+                filename=file.filename,
+                csv_content=csv_text,
+                user_id=user_id,
+                row_count=df.shape[0],
+                column_count=df.shape[1],
+                # 因子分析特有のメタデータ
+                dimensions_count=results.get("n_factors", 0),
+                dimension_1_contribution=(
+                    results.get("explained_variance", [0])[0] / 100
+                    if results.get("explained_variance")
+                    else 0
+                ),
+                rotation=results.get("rotation", ""),
+                standardized=results.get("standardized", False),
+            )
+
+            db.add(session)
+            db.flush()  # IDを取得するため
+            session_id = session.session_id
+
+            # タグを保存
+            if tags:
+                from models import SessionTag
+
+                for tag in tags:
+                    if tag.strip():
+                        session_tag = SessionTag(
+                            session_id=session_id, tag_name=tag.strip()
+                        )
+                        db.add(session_tag)
+
+            # プロット画像を保存
+            if plot_base64:
+                visualization = VisualizationData(
+                    session_id=session_id,
+                    plot_image=plot_base64,
+                    plot_width=1400,
+                    plot_height=1100,
+                )
+                db.add(visualization)
+
+            db.commit()
+            return session_id
+
+        except Exception as e:
+            print(f"❌ 直接保存エラー: {str(e)}")
+            db.rollback()
+            return 0
 
     def _save_coordinates_data(
         self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
@@ -661,3 +753,579 @@ class FactorAnalysisAnalyzer(BaseAnalyzer):
                 "sample_names": results["sample_names"],
             },
         }
+
+        # FactorAnalysisAnalyzer クラスに追加するメソッド
+
+    def get_session_detail(self, db: Session, session_id: int) -> Dict[str, Any]:
+        """因子分析セッション詳細を取得（座標データ含む）"""
+        try:
+            print(f"📊 因子分析セッション詳細取得開始: {session_id}")
+
+            # 基底クラスのメソッドが存在するかチェック
+            if hasattr(super(), "get_session_detail"):
+                try:
+                    base_detail = super().get_session_detail(db, session_id)
+                except Exception as e:
+                    print(f"⚠️ 基底クラスのget_session_detailエラー: {e}")
+                    base_detail = self._get_session_detail_directly(db, session_id)
+            else:
+                print("⚠️ 基底クラスにget_session_detailメソッドがありません")
+                base_detail = self._get_session_detail_directly(db, session_id)
+
+            if not base_detail or not base_detail.get("success"):
+                return base_detail
+
+            # 座標データを取得
+            coordinates_data = self._get_coordinates_data(db, session_id)
+
+            # レスポンス構造を構築
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": base_detail["data"]["session_info"],
+                    "metadata": {
+                        "filename": base_detail["data"]["metadata"]["filename"],
+                        "rows": base_detail["data"]["metadata"]["rows"],
+                        "columns": base_detail["data"]["metadata"]["columns"],
+                        "sample_names": coordinates_data.get("sample_names", []),
+                        "feature_names": coordinates_data.get("feature_names", []),
+                    },
+                    "analysis_data": {
+                        "factor_scores": coordinates_data.get("factor_scores", []),
+                        "factor_loadings": coordinates_data.get("factor_loadings", []),
+                    },
+                    "visualization": base_detail["data"].get("visualization", {}),
+                },
+            }
+
+            print(f"✅ 因子分析セッション詳細取得完了")
+            return response_data
+
+        except Exception as e:
+            print(f"❌ 因子分析セッション詳細取得エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
+    def _get_coordinates_data(self, db: Session, session_id: int) -> Dict[str, Any]:
+        """座標データを取得"""
+        try:
+            from models import CoordinatesData
+
+            # 座標データを取得
+            coordinates = (
+                db.query(CoordinatesData)
+                .filter(CoordinatesData.session_id == session_id)
+                .all()
+            )
+
+            # 因子得点データ（観測値）
+            factor_scores = []
+            sample_names = []
+
+            # 因子負荷量データ（変数）
+            factor_loadings = []
+            feature_names = []
+
+            for coord in coordinates:
+                if coord.point_type == "observation":
+                    factor_scores.append(
+                        {
+                            "name": coord.point_name,
+                            "dimension_1": coord.dimension_1 or 0.0,
+                            "dimension_2": coord.dimension_2 or 0.0,
+                            "dimension_3": coord.dimension_3 or 0.0,
+                            "dimension_4": coord.dimension_4 or 0.0,
+                            "order_index": len(factor_scores),
+                        }
+                    )
+                    sample_names.append(coord.point_name)
+
+                elif coord.point_type == "variable":
+                    factor_loadings.append(
+                        {
+                            "name": coord.point_name,
+                            "dimension_1": coord.dimension_1 or 0.0,
+                            "dimension_2": coord.dimension_2 or 0.0,
+                            "dimension_3": coord.dimension_3 or 0.0,
+                            "dimension_4": coord.dimension_4 or 0.0,
+                            "order_index": len(factor_loadings),
+                        }
+                    )
+                    feature_names.append(coord.point_name)
+
+            print(f"🔍 座標データ取得結果:")
+            print(f"  - 因子得点: {len(factor_scores)}件")
+            print(f"  - 因子負荷量: {len(factor_loadings)}件")
+
+            return {
+                "factor_scores": factor_scores,
+                "factor_loadings": factor_loadings,
+                "sample_names": sample_names,
+                "feature_names": feature_names,
+            }
+
+        except Exception as e:
+            print(f"❌ 座標データ取得エラー: {str(e)}")
+            return {
+                "factor_scores": [],
+                "factor_loadings": [],
+                "sample_names": [],
+                "feature_names": [],
+            }
+
+    def _get_factor_metadata(self, db: Session, session_id: int) -> Dict[str, Any]:
+        """因子分析特有のメタデータを取得"""
+        try:
+            from models import AnalysisMetadata
+
+            # 因子負荷量メタデータ
+            factor_loadings_meta = (
+                db.query(AnalysisMetadata)
+                .filter(
+                    AnalysisMetadata.session_id == session_id,
+                    AnalysisMetadata.metadata_type == "factor_loadings",
+                )
+                .first()
+            )
+
+            # 前提条件メタデータ
+            assumptions_meta = (
+                db.query(AnalysisMetadata)
+                .filter(
+                    AnalysisMetadata.session_id == session_id,
+                    AnalysisMetadata.metadata_type == "factor_assumptions",
+                )
+                .first()
+            )
+
+            metadata = {}
+
+            if factor_loadings_meta:
+                metadata["factor_loadings"] = factor_loadings_meta.metadata_content
+
+            if assumptions_meta:
+                metadata["assumptions"] = assumptions_meta.metadata_content
+
+            return metadata
+
+        except Exception as e:
+            print(f"❌ 因子分析メタデータ取得エラー: {str(e)}")
+            return {}
+
+    async def _get_session_detail_directly(self, db: Session, session_id: int):
+        """因子分析セッション詳細を直接取得"""
+        try:
+            from models import AnalysisSession, VisualizationData, CoordinatesData
+
+            print(f"📊 因子分析セッション詳細取得開始: {session_id}")
+
+            # セッション基本情報を取得
+            session = (
+                db.query(AnalysisSession)
+                .filter(
+                    AnalysisSession.session_id == session_id,
+                    AnalysisSession.analysis_type == "factor",
+                )
+                .first()
+            )
+
+            if not session:
+                return {
+                    "success": False,
+                    "error": f"因子分析セッション {session_id} が見つかりません",
+                }
+
+            print(f"✅ セッション基本情報取得: {session.session_name}")
+
+            # 可視化データを取得
+            visualization = (
+                db.query(VisualizationData)
+                .filter(VisualizationData.session_id == session_id)
+                .first()
+            )
+
+            # 座標データを取得
+            coordinates = (
+                db.query(CoordinatesData)
+                .filter(CoordinatesData.session_id == session_id)
+                .all()
+            )
+
+            print(f"🔍 座標データ取得: {len(coordinates)}件")
+
+            # 因子得点データ（observation）
+            factor_scores = []
+            sample_names = []
+
+            # 因子負荷量データ（variable）
+            factor_loadings = []
+            feature_names = []
+
+            for coord in coordinates:
+                if coord.point_type == "observation":
+                    factor_scores.append(
+                        {
+                            "name": coord.point_name,
+                            "sample_name": coord.point_name,
+                            "point_name": coord.point_name,
+                            "dimension_1": (
+                                float(coord.dimension_1)
+                                if coord.dimension_1 is not None
+                                else 0.0
+                            ),
+                            "dimension_2": (
+                                float(coord.dimension_2)
+                                if coord.dimension_2 is not None
+                                else 0.0
+                            ),
+                            "dimension_3": (
+                                float(coord.dimension_3)
+                                if coord.dimension_3 is not None
+                                else 0.0
+                            ),
+                            "dimension_4": (
+                                float(coord.dimension_4)
+                                if coord.dimension_4 is not None
+                                else 0.0
+                            ),
+                            "factor_1": (
+                                float(coord.dimension_1)
+                                if coord.dimension_1 is not None
+                                else 0.0
+                            ),
+                            "factor_2": (
+                                float(coord.dimension_2)
+                                if coord.dimension_2 is not None
+                                else 0.0
+                            ),
+                            "factor_3": (
+                                float(coord.dimension_3)
+                                if coord.dimension_3 is not None
+                                else 0.0
+                            ),
+                            "order_index": len(factor_scores),
+                        }
+                    )
+                    sample_names.append(coord.point_name)
+
+                elif coord.point_type == "variable":
+                    factor_loadings.append(
+                        {
+                            "name": coord.point_name,
+                            "variable_name": coord.point_name,
+                            "point_name": coord.point_name,
+                            "dimension_1": (
+                                float(coord.dimension_1)
+                                if coord.dimension_1 is not None
+                                else 0.0
+                            ),
+                            "dimension_2": (
+                                float(coord.dimension_2)
+                                if coord.dimension_2 is not None
+                                else 0.0
+                            ),
+                            "dimension_3": (
+                                float(coord.dimension_3)
+                                if coord.dimension_3 is not None
+                                else 0.0
+                            ),
+                            "dimension_4": (
+                                float(coord.dimension_4)
+                                if coord.dimension_4 is not None
+                                else 0.0
+                            ),
+                            "factor_1": (
+                                float(coord.dimension_1)
+                                if coord.dimension_1 is not None
+                                else 0.0
+                            ),
+                            "factor_2": (
+                                float(coord.dimension_2)
+                                if coord.dimension_2 is not None
+                                else 0.0
+                            ),
+                            "factor_3": (
+                                float(coord.dimension_3)
+                                if coord.dimension_3 is not None
+                                else 0.0
+                            ),
+                            "order_index": len(factor_loadings),
+                        }
+                    )
+                    feature_names.append(coord.point_name)
+
+            print(f"📊 座標データ集計結果:")
+            print(f"  - 因子得点: {len(factor_scores)}件")
+            print(f"  - 因子負荷量: {len(factor_loadings)}件")
+
+            # レスポンス構造を構築
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": {
+                        "session_id": session.session_id,
+                        "session_name": session.session_name,
+                        "description": session.description or "",
+                        "filename": session.filename,
+                        "row_count": session.row_count,
+                        "column_count": session.column_count,
+                        "dimensions_count": session.dimensions_count or 2,
+                        "dimension_1_contribution": (
+                            float(session.dimension_1_contribution)
+                            if session.dimension_1_contribution
+                            else 0.0
+                        ),
+                        "dimension_2_contribution": (
+                            float(session.dimension_2_contribution)
+                            if session.dimension_2_contribution
+                            else 0.0
+                        ),
+                        "rotation": session.rotation or "varimax",
+                        "standardized": session.standardized or True,
+                        "analysis_timestamp": (
+                            session.analysis_timestamp.isoformat()
+                            if session.analysis_timestamp
+                            else None
+                        ),
+                    },
+                    "metadata": {
+                        "filename": session.filename,
+                        "rows": session.row_count,
+                        "columns": session.column_count,
+                        "sample_names": sample_names,
+                        "feature_names": feature_names,
+                    },
+                    "analysis_data": {
+                        "factor_scores": factor_scores,
+                        "factor_loadings": factor_loadings,
+                    },
+                    "visualization": {
+                        "plot_image": (
+                            visualization.plot_image if visualization else None
+                        ),
+                        "width": visualization.plot_width if visualization else 1400,
+                        "height": visualization.plot_height if visualization else 1100,
+                    },
+                },
+            }
+
+            print(f"✅ 因子分析セッション詳細取得完了")
+            print(
+                f"📊 返却データ: factor_scores={len(factor_scores)}, factor_loadings={len(factor_loadings)}"
+            )
+
+            return response_data
+
+        except Exception as e:
+            print(f"❌ 因子分析セッション詳細取得エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
+    # async def get_session_detail(self, session_id: int, db: Session):
+    #     """因子分析セッション詳細取得のパブリックメソッド"""
+    #     return await self._get_session_detail_directly(db, session_id)
+
+    # factor_analysis_analyzer.py に以下のメソッドを追加
+
+    async def _get_session_detail_directly(self, db: Session, session_id: int):
+        """因子分析セッション詳細を直接取得"""
+        try:
+            from models import AnalysisSession, VisualizationData, CoordinatesData
+
+            print(f"📊 因子分析セッション詳細取得開始: {session_id}")
+
+            # セッション基本情報を取得（正しいカラム名を使用）
+            session = (
+                db.query(AnalysisSession)
+                .filter(
+                    AnalysisSession.id == session_id,
+                    AnalysisSession.analysis_type == "factor",
+                )
+                .first()
+            )
+
+            # analysis_typeフィルタなしで再試行
+            if not session:
+                session = (
+                    db.query(AnalysisSession)
+                    .filter(AnalysisSession.id == session_id)
+                    .first()
+                )
+
+            if not session:
+                return {
+                    "success": False,
+                    "error": f"セッション {session_id} が見つかりません",
+                }
+
+            print(f"✅ セッション基本情報取得: {session.session_name}")
+            print(
+                f"🔍 セッション詳細: analysis_type={getattr(session, 'analysis_type', 'None')}"
+            )
+
+            # 可視化データを取得
+            visualization = (
+                db.query(VisualizationData)
+                .filter(VisualizationData.session_id == session_id)
+                .first()
+            )
+
+            # 座標データを取得
+            coordinates = (
+                db.query(CoordinatesData)
+                .filter(CoordinatesData.session_id == session_id)
+                .all()
+            )
+
+            print(
+                f"🔍 データ取得結果: 座標={len(coordinates)}件, 可視化={'あり' if visualization else 'なし'}"
+            )
+
+            # 因子得点データ（observation）と因子負荷量データ（variable）
+            factor_scores = []
+            factor_loadings = []
+            sample_names = []
+            feature_names = []
+
+            for coord in coordinates:
+                coord_data = {
+                    "name": coord.point_name,
+                    "point_name": coord.point_name,
+                    "dimension_1": (
+                        float(coord.dimension_1)
+                        if coord.dimension_1 is not None
+                        else 0.0
+                    ),
+                    "dimension_2": (
+                        float(coord.dimension_2)
+                        if coord.dimension_2 is not None
+                        else 0.0
+                    ),
+                    "dimension_3": (
+                        float(coord.dimension_3)
+                        if coord.dimension_3 is not None
+                        else 0.0
+                    ),
+                    "dimension_4": (
+                        float(coord.dimension_4)
+                        if coord.dimension_4 is not None
+                        else 0.0
+                    ),
+                    "factor_1": (
+                        float(coord.dimension_1)
+                        if coord.dimension_1 is not None
+                        else 0.0
+                    ),
+                    "factor_2": (
+                        float(coord.dimension_2)
+                        if coord.dimension_2 is not None
+                        else 0.0
+                    ),
+                    "factor_3": (
+                        float(coord.dimension_3)
+                        if coord.dimension_3 is not None
+                        else 0.0
+                    ),
+                }
+
+                if coord.point_type == "observation":
+                    coord_data["sample_name"] = coord.point_name
+                    coord_data["order_index"] = len(factor_scores)
+                    factor_scores.append(coord_data)
+                    sample_names.append(coord.point_name)
+
+                elif coord.point_type == "variable":
+                    coord_data["variable_name"] = coord.point_name
+                    coord_data["order_index"] = len(factor_loadings)
+                    factor_loadings.append(coord_data)
+                    feature_names.append(coord.point_name)
+
+            print(f"📊 座標データ分析結果:")
+            print(f"  - 因子得点: {len(factor_scores)}件")
+            print(f"  - 因子負荷量: {len(factor_loadings)}件")
+            print(f"  - サンプル名: {sample_names[:3]}...")
+            print(f"  - 変数名: {feature_names[:3]}...")
+
+            # レスポンス構造を構築
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": {
+                        "session_id": session.id,
+                        "session_name": session.session_name,
+                        "description": getattr(session, "description", "") or "",
+                        "filename": session.original_filename,
+                        "row_count": getattr(session, "row_count", len(factor_scores))
+                        or len(factor_scores),
+                        "column_count": getattr(
+                            session, "column_count", len(factor_loadings)
+                        )
+                        or len(factor_loadings),
+                        "dimensions_count": getattr(session, "dimensions_count", 2)
+                        or 2,
+                        "dimension_1_contribution": (
+                            float(getattr(session, "dimension_1_contribution", 0))
+                            if getattr(session, "dimension_1_contribution", None)
+                            else 50.0
+                        ),
+                        "dimension_2_contribution": (
+                            float(getattr(session, "dimension_2_contribution", 0))
+                            if getattr(session, "dimension_2_contribution", None)
+                            else 30.0
+                        ),
+                        "rotation": getattr(session, "rotation", "varimax")
+                        or "varimax",
+                        "standardized": getattr(session, "standardized", True),
+                        "analysis_timestamp": (
+                            session.analysis_timestamp.isoformat()
+                            if hasattr(session, "analysis_timestamp")
+                            and session.analysis_timestamp
+                            else None
+                        ),
+                    },
+                    "metadata": {
+                        "filename": session.original_filename,
+                        "rows": getattr(session, "row_count", len(factor_scores))
+                        or len(factor_scores),
+                        "columns": getattr(
+                            session, "column_count", len(factor_loadings)
+                        )
+                        or len(factor_loadings),
+                        "sample_names": sample_names,
+                        "feature_names": feature_names,
+                    },
+                    "analysis_data": {
+                        "factor_scores": factor_scores,
+                        "factor_loadings": factor_loadings,
+                    },
+                    "visualization": {
+                        "plot_image": (
+                            visualization.image_base64 if visualization else None
+                        ),
+                        "width": visualization.width if visualization else 1400,
+                        "height": visualization.height if visualization else 1100,
+                    },
+                },
+            }
+
+            print(f"✅ 因子分析セッション詳細取得完了")
+            print(
+                f"📊 返却データ構造: session_info=✓, metadata=✓, analysis_data=✓, visualization={'✓' if visualization else '✗'}"
+            )
+
+            return response_data
+
+        except Exception as e:
+            print(f"❌ 因子分析セッション詳細取得エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
+    async def get_session_detail(self, session_id: int, db: Session):
+        """因子分析セッション詳細取得のパブリックメソッド"""
+        return await self._get_session_detail_directly(db, session_id)

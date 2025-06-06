@@ -10,6 +10,8 @@ from sqlalchemy import (
     LargeBinary,
     ARRAY,
     UniqueConstraint,
+    Float,
+    Boolean,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -39,7 +41,17 @@ class AnalysisSession(Base):
     user_id = Column(String(100))
 
     # 🆕 分析手法の種類を追加
-    analysis_type = Column(String(50), default="correspondence", nullable=False)
+    analysis_type = Column(String(50))
+    row_count = Column(Integer)
+    column_count = Column(Integer)
+    dimensions_count = Column(Integer)
+    dimension_1_contribution = Column(Float)
+    dimension_2_contribution = Column(Float)
+    rotation = Column(String(50))  # 'varimax', 'promax', etc.
+    standardized = Column(Boolean)
+    total_inertia = Column(Float)
+    chi2_value = Column(Float)
+    degrees_of_freedom = Column(Integer)
 
     # 分析結果の統計情報
     total_inertia = Column(DECIMAL(10, 8))

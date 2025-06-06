@@ -251,3 +251,44 @@ async def get_interpretation_guide():
             },
         },
     }
+
+
+@router.get("/sessions/{session_id}")
+async def get_factor_session_detail(
+    session_id: int,
+    db: Session = Depends(get_db),
+):
+    """因子分析セッション詳細を取得"""
+    try:
+        print(f"📊 因子分析セッション詳細取得開始: {session_id}")
+
+        # FactorAnalysisAnalyzerのインスタンスを作成
+        analyzer = FactorAnalysisAnalyzer()
+
+        # 修正されたメソッド名で呼び出し
+        session_detail = await analyzer.get_session_detail(session_id, db)
+
+        print(f"🔍 取得されたセッション詳細: {session_detail.get('success', False)}")
+
+        if not session_detail or not session_detail.get("success"):
+            error_msg = (
+                session_detail.get("error", f"セッション {session_id} が見つかりません")
+                if session_detail
+                else f"セッション {session_id} が見つかりません"
+            )
+            raise HTTPException(status_code=404, detail=error_msg)
+
+        return JSONResponse(content=session_detail)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ 因子分析セッション詳細取得エラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"セッション詳細の取得中にエラーが発生しました: {str(e)}",
+        )

@@ -91,11 +91,55 @@ export default function PCAPage() {
     setSessionsLoading(false);
   }
 };
+  // APIレスポンス構造をデバッグする関数
+  const debugApiResponse = (data: any, level = 0) => {
+    const indent = '  '.repeat(level);
+    console.log(`${indent}🔍 Response structure analysis:`);
+    
+    if (typeof data !== 'object' || data === null) {
+      console.log(`${indent}Type: ${typeof data}, Value: ${data}`);
+      return;
+    }
+    
+    if (Array.isArray(data)) {
+      console.log(`${indent}Array with ${data.length} items`);
+      if (data.length > 0) {
+        console.log(`${indent}First item structure:`);
+        debugApiResponse(data[0], level + 1);
+      }
+      return;
+    }
+    
+    console.log(`${indent}Object keys: [${Object.keys(data).join(', ')}]`);
+    
+    // 重要なキーを個別にチェック
+    const importantKeys = [
+      'analysis_data', 'pca_coordinates', 'coordinates', 
+      'scores', 'loadings', 'visualization', 'plot_image'
+    ];
+    importantKeys.forEach(key => {
+      if (data.hasOwnProperty(key)) {
+        console.log(`${indent}📋 ${key}:`);
+        if (key === 'scores' || key === 'loadings') {
+          if (Array.isArray(data[key])) {
+            console.log(`${indent}  Array with ${data[key].length} items`);
+            if (data[key].length > 0) {
+              console.log(`${indent}  Sample item:`, JSON.stringify(data[key][0], null, 2));
+            }
+          } else {
+            console.log(`${indent}  Type: ${typeof data[key]}`);
+          }
+        } else if (level < 2) {
+          debugApiResponse(data[key], level + 1);
+        }
+      }
+    });
+  };
 
-  // 特定のセッションの詳細を取得
+// 修正版 fetchSessionDetail 関数
   const fetchSessionDetail = async (sessionId: number) => {
     try {
-      console.log('Fetching PCA session details for:', sessionId);
+      console.log('🔍 PCA分析セッション詳細取得開始:', sessionId);
       
       const response = await fetch(`/api/sessions/${sessionId}`);
       
@@ -108,41 +152,120 @@ export default function PCAPage() {
       }
 
       const data: SessionDetailResponse = await response.json();
-      console.log('Received PCA session data:', data);
+      console.log('📥 PCA session detail response:', data);
 
       if (data.success && data.data) {
-        const pythonResponse = data.data;
-        
+        const pythonResponse = data.data.success ? data.data.data : data.data;
+        console.log('🔍 Python response structure:', {
+          keys: Object.keys(pythonResponse),
+          analysisData: pythonResponse.analysis_data ? Object.keys(pythonResponse.analysis_data) : null,
+        });
+
+        // 座標データの取得を実際のデータ構造に合わせて修正
+        let scores = [];
+        let loadings = [];
+
+        // scores は component_scores という名前で格納されている
+        if (pythonResponse.analysis_data?.component_scores) {
+          const componentScores = pythonResponse.analysis_data.component_scores;
+          const sampleNames = pythonResponse.analysis_data?.sample_names || [];
+          
+          console.log('🎯 Component scores found:', {
+            type: typeof componentScores,
+            isArray: Array.isArray(componentScores),
+            length: componentScores.length,
+            sampleNamesLength: sampleNames.length,
+            firstRow: componentScores[0]
+          });
+
+          // component_scores を適切な形式に変換
+          if (Array.isArray(componentScores) && sampleNames.length > 0) {
+            scores = componentScores.map((scoreRow: number[], index: number) => ({
+              name: sampleNames[index] || `Sample ${index + 1}`,
+              dimension_1: scoreRow[0] || 0,
+              dimension_2: scoreRow[1] || 0,
+              pc1: scoreRow[0] || 0,
+              pc2: scoreRow[1] || 0
+            }));
+          }
+        }
+
+        // loadings の処理
+        if (pythonResponse.analysis_data?.loadings) {
+          const loadingsData = pythonResponse.analysis_data.loadings;
+          const featureNames = pythonResponse.analysis_data?.feature_names || [];
+          
+          console.log('🎯 Loadings found:', {
+            type: typeof loadingsData,
+            isArray: Array.isArray(loadingsData),
+            length: loadingsData.length,
+            featureNamesLength: featureNames.length,
+            firstRow: loadingsData[0]
+          });
+
+          // loadings を適切な形式に変換
+          if (Array.isArray(loadingsData) && featureNames.length > 0) {
+            loadings = loadingsData.map((loadingRow: number[], index: number) => ({
+              name: featureNames[index] || `Variable ${index + 1}`,
+              dimension_1: loadingRow[0] || 0,
+              dimension_2: loadingRow[1] || 0,
+              pc1: loadingRow[0] || 0,
+              pc2: loadingRow[1] || 0
+            }));
+          }
+        }
+
+        console.log('🔍 座標データの最終取得結果:', {
+          scoresLength: scores.length,
+          loadingsLength: loadings.length,
+          scoresFirst: scores[0],
+          loadingsFirst: loadings[0]
+        });
+
+        // プロット画像の取得
+        let plotImage = '';
+        if (pythonResponse.visualization?.plot_image) {
+          plotImage = pythonResponse.visualization.plot_image;
+        } else if (pythonResponse.plot_image) {
+          plotImage = pythonResponse.plot_image;
+        } else if (pythonResponse.analysis_data?.plot_image) {
+          plotImage = pythonResponse.analysis_data.plot_image;
+        }
+
+        // サンプル名と変数名の取得
+        const sampleNames = pythonResponse.analysis_data?.sample_names || [];
+        const featureNames = pythonResponse.analysis_data?.feature_names || [];
+
         // PCA分析結果への型安全な変換処理
         const analysisResult: PCAAnalysisResult = {
           success: true,
           session_id: pythonResponse.session_info?.session_id || sessionId,
           session_name: pythonResponse.session_info?.session_name || '',
           analysis_type: 'pca',
-          plot_base64: pythonResponse.visualization?.plot_image || "", 
+          plot_base64: plotImage,
           data: {
             n_components: pythonResponse.analysis_data?.n_components || 2,
-            n_samples: pythonResponse.analysis_data?.n_samples || 0,
-            n_features: pythonResponse.analysis_data?.n_features || 0,
+            n_samples: pythonResponse.analysis_data?.n_samples || pythonResponse.metadata?.row_count || sampleNames.length || 0,
+            n_features: pythonResponse.analysis_data?.n_features || pythonResponse.metadata?.column_count || featureNames.length || 0,
             standardized: pythonResponse.analysis_data?.standardized || false,
             explained_variance_ratio: pythonResponse.analysis_data?.explained_variance_ratio || [],
             cumulative_variance_ratio: pythonResponse.analysis_data?.cumulative_variance_ratio || [],
-            eigenvalues: pythonResponse.analysis_data?.eigenvalues?.map((e: any) => e.eigenvalue) || [],
+            eigenvalues: pythonResponse.analysis_data?.eigenvalues || [],
             kmo: pythonResponse.analysis_data?.kmo || 0,
             determinant: pythonResponse.analysis_data?.determinant || 0,
-            plot_image: pythonResponse.visualization?.plot_image || "",
+            plot_image: plotImage,
             coordinates: {
-              scores: pythonResponse.analysis_data?.pca_coordinates?.scores || [],
-              loadings: pythonResponse.analysis_data?.pca_coordinates?.loadings || []
+              scores: scores,
+              loadings: loadings
             }
           },
           metadata: {
             session_name: pythonResponse.session_info?.session_name || '',
-            filename: pythonResponse.session_info?.filename || '',
-            rows: pythonResponse.metadata?.row_count || 0,
-            columns: pythonResponse.metadata?.column_count || 0,
-            sample_names: pythonResponse.analysis_data?.pca_coordinates?.scores?.map((s: any) => s.name) || [],
-            feature_names: pythonResponse.analysis_data?.pca_coordinates?.loadings?.map((l: any) => l.name) || []
+            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
+            rows: pythonResponse.metadata?.row_count || sampleNames.length || 0,
+            columns: pythonResponse.metadata?.column_count || featureNames.length || 0,
+            sample_names: sampleNames,
+            feature_names: featureNames
           },
           session_info: {
             session_id: pythonResponse.session_info?.session_id || sessionId,
@@ -150,15 +273,26 @@ export default function PCAPage() {
             description: pythonResponse.session_info?.description || '',
             tags: pythonResponse.session_info?.tags || [],
             analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-            filename: pythonResponse.session_info?.filename || '',
+            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
             analysis_type: 'pca',
-            row_count: pythonResponse.metadata?.row_count || 0,
-            column_count: pythonResponse.metadata?.column_count || 0
+            row_count: pythonResponse.metadata?.row_count || sampleNames.length || 0,
+            column_count: pythonResponse.metadata?.column_count || featureNames.length || 0
           }
         };
 
+        console.log('📊 Building PCA analysis result with data:', {
+          success: analysisResult.success,
+          session_id: analysisResult.session_id,
+          hasCoordinates: !!analysisResult.data.coordinates,
+          scoresCount: analysisResult.data.coordinates?.scores?.length || 0,
+          loadingsCount: analysisResult.data.coordinates?.loadings?.length || 0,
+          hasPlotImage: !!analysisResult.plot_base64,
+          sampleNamesCount: analysisResult.metadata.sample_names?.length || 0,
+          featureNamesCount: analysisResult.metadata.feature_names?.length || 0
+        });
+
         setResult(analysisResult);
-        console.log('PCA session details loaded successfully');
+        console.log('✅ PCA session details loaded successfully');
         
       } else {
         console.error('Invalid response format:', data);
@@ -973,14 +1107,26 @@ export default function PCAPage() {
             </div>
           )}
 
-          {/* 座標データの詳細 */}
+          {/* 座標データの詳細 - 改善版 */}
           <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* 主成分得点 */}
             <div className="bg-gray-50 rounded-lg p-4">
               <h4 className="font-semibold mb-3 flex items-center">
                 <span className="w-3 h-3 bg-blue-500 rounded-full mr-2"></span>
                 主成分得点（サンプル）
+                <span className="ml-2 text-sm text-gray-500">
+                  ({result.data.coordinates?.scores?.length || 0}件)
+                </span>
               </h4>
+              
+              {/* デバッグ情報の表示（開発時のみ） */}
+              {process.env.NODE_ENV === 'development' && (
+                <div className="mb-2 p-2 bg-yellow-100 rounded text-xs">
+                  <p>Debug: scores array length = {result.data.coordinates?.scores?.length || 0}</p>
+                  <p>Debug: first score = {JSON.stringify(result.data.coordinates?.scores?.[0])}</p>
+                </div>
+              )}
+              
               <div className="max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-100 sticky top-0">
@@ -991,26 +1137,40 @@ export default function PCAPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.data.coordinates?.scores?.map((score, index) => (
-                      <tr key={index} className="hover:bg-gray-100">
-                        <td className="p-2 font-medium">{score.name}</td>
-                        <td className="p-2 text-right">{score.dimension_1?.toFixed(3) || '-'}</td>
-                        <td className="p-2 text-right">{score.dimension_2?.toFixed(3) || '-'}</td>
-                      </tr>
-                    )) || []}
-                    {(!result.data.coordinates?.scores || result.data.coordinates.scores.length === 0) && 
-                     result.metadata.sample_names?.map((name, index) => (
-                      <tr key={`fallback-${index}`} className="hover:bg-gray-100">
-                        <td className="p-2 font-medium">{name}</td>
-                        <td className="p-2 text-right">-</td>
-                        <td className="p-2 text-right">-</td>
-                      </tr>
-                    )) || []}
-                    {(!result.data.coordinates?.scores || result.data.coordinates.scores.length === 0) && 
-                     (!result.metadata.sample_names || result.metadata.sample_names.length === 0) && (
+                    {result.data.coordinates?.scores && result.data.coordinates.scores.length > 0 ? (
+                      result.data.coordinates.scores.map((score, index) => (
+                        <tr key={index} className="hover:bg-gray-100">
+                          <td className="p-2 font-medium">
+                            {score.name || score.sample_name || score.label || `Sample ${index + 1}`}
+                          </td>
+                          <td className="p-2 text-right">
+                            {typeof score.dimension_1 === 'number' ? score.dimension_1.toFixed(3) : 
+                            typeof score.pc1 === 'number' ? score.pc1.toFixed(3) :
+                            typeof score.x === 'number' ? score.x.toFixed(3) : '-'}
+                          </td>
+                          <td className="p-2 text-right">
+                            {typeof score.dimension_2 === 'number' ? score.dimension_2.toFixed(3) :
+                            typeof score.pc2 === 'number' ? score.pc2.toFixed(3) :
+                            typeof score.y === 'number' ? score.y.toFixed(3) : '-'}
+                          </td>
+                        </tr>
+                      ))
+                    ) : result.metadata.sample_names && result.metadata.sample_names.length > 0 ? (
+                      result.metadata.sample_names.map((name, index) => (
+                        <tr key={`fallback-${index}`} className="hover:bg-gray-100">
+                          <td className="p-2 font-medium">{name}</td>
+                          <td className="p-2 text-right text-gray-400">データなし</td>
+                          <td className="p-2 text-right text-gray-400">データなし</td>
+                        </tr>
+                      ))
+                    ) : (
                       <tr>
                         <td colSpan={3} className="p-4 text-center text-gray-500">
                           主成分得点データがありません
+                          <br />
+                          <span className="text-xs">
+                            履歴から表示する場合、データが正しく保存されていない可能性があります
+                          </span>
                         </td>
                       </tr>
                     )}
@@ -1024,7 +1184,19 @@ export default function PCAPage() {
               <h4 className="font-semibold mb-3 flex items-center">
                 <span className="w-3 h-3 bg-red-500 rounded-full mr-2"></span>
                 主成分負荷量（変数）
+                <span className="ml-2 text-sm text-gray-500">
+                  ({result.data.coordinates?.loadings?.length || 0}件)
+                </span>
               </h4>
+              
+              {/* デバッグ情報の表示（開発時のみ） */}
+              {process.env.NODE_ENV === 'development' && (
+                <div className="mb-2 p-2 bg-yellow-100 rounded text-xs">
+                  <p>Debug: loadings array length = {result.data.coordinates?.loadings?.length || 0}</p>
+                  <p>Debug: first loading = {JSON.stringify(result.data.coordinates?.loadings?.[0])}</p>
+                </div>
+              )}
+              
               <div className="max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-100 sticky top-0">
@@ -1035,26 +1207,40 @@ export default function PCAPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {result.data.coordinates?.loadings?.map((loading, index) => (
-                      <tr key={index} className="hover:bg-gray-100">
-                        <td className="p-2 font-medium">{loading.name}</td>
-                        <td className="p-2 text-right">{loading.dimension_1?.toFixed(3) || '-'}</td>
-                        <td className="p-2 text-right">{loading.dimension_2?.toFixed(3) || '-'}</td>
-                      </tr>
-                    )) || []}
-                    {(!result.data.coordinates?.loadings || result.data.coordinates.loadings.length === 0) && 
-                     result.metadata.feature_names?.map((name, index) => (
-                      <tr key={`fallback-${index}`} className="hover:bg-gray-100">
-                        <td className="p-2 font-medium">{name}</td>
-                        <td className="p-2 text-right">-</td>
-                        <td className="p-2 text-right">-</td>
-                      </tr>
-                    )) || []}
-                    {(!result.data.coordinates?.loadings || result.data.coordinates.loadings.length === 0) && 
-                     (!result.metadata.feature_names || result.metadata.feature_names.length === 0) && (
+                    {result.data.coordinates?.loadings && result.data.coordinates.loadings.length > 0 ? (
+                      result.data.coordinates.loadings.map((loading, index) => (
+                        <tr key={index} className="hover:bg-gray-100">
+                          <td className="p-2 font-medium">
+                            {loading.name || loading.variable_name || loading.label || `Variable ${index + 1}`}
+                          </td>
+                          <td className="p-2 text-right">
+                            {typeof loading.dimension_1 === 'number' ? loading.dimension_1.toFixed(3) :
+                            typeof loading.pc1 === 'number' ? loading.pc1.toFixed(3) :
+                            typeof loading.x === 'number' ? loading.x.toFixed(3) : '-'}
+                          </td>
+                          <td className="p-2 text-right">
+                            {typeof loading.dimension_2 === 'number' ? loading.dimension_2.toFixed(3) :
+                            typeof loading.pc2 === 'number' ? loading.pc2.toFixed(3) :
+                            typeof loading.y === 'number' ? loading.y.toFixed(3) : '-'}
+                          </td>
+                        </tr>
+                      ))
+                    ) : result.metadata.feature_names && result.metadata.feature_names.length > 0 ? (
+                      result.metadata.feature_names.map((name, index) => (
+                        <tr key={`fallback-${index}`} className="hover:bg-gray-100">
+                          <td className="p-2 font-medium">{name}</td>
+                          <td className="p-2 text-right text-gray-400">データなし</td>
+                          <td className="p-2 text-right text-gray-400">データなし</td>
+                        </tr>
+                      ))
+                    ) : (
                       <tr>
                         <td colSpan={3} className="p-4 text-center text-gray-500">
                           主成分負荷量データがありません
+                          <br />
+                          <span className="text-xs">
+                            履歴から表示する場合、データが正しく保存されていない可能性があります
+                          </span>
                         </td>
                       </tr>
                     )}
@@ -1063,6 +1249,7 @@ export default function PCAPage() {
               </div>
             </div>
           </div>
+
 
           {/* 分析結果の解釈とアドバイス */}
           <div className="mt-8 bg-yellow-50 border-l-4 border-yellow-400 p-4">
