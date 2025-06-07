@@ -206,8 +206,6 @@ export default function FactorAnalysisPage() {
     try {
       setError(null);
       
-      console.log(`📊 因子分析セッション詳細取得開始: ${sessionId}`);
-      
       const response = await fetch(`/api/factor/sessions/${sessionId}`, {
         method: 'GET',
         headers: {
@@ -220,162 +218,111 @@ export default function FactorAnalysisPage() {
       }
 
       const data = await response.json();
-      console.log('🔍 完全なレスポンス構造:', JSON.stringify(data, null, 2));
       
       if (!data.success) {
         throw new Error(data.error || 'セッション詳細の取得に失敗しました');
       }
 
-      // Pythonレスポンスの詳細解析
       const pythonResponse = data.data || {};
-      console.log('🔍 Python response 詳細解析:', {
-        topLevelKeys: Object.keys(pythonResponse),
-        sessionInfo: pythonResponse.session_info,
-        metadata: pythonResponse.metadata,
-        analysisDataKeys: Object.keys(pythonResponse.analysis_data || {}),
-        analysisDataContent: pythonResponse.analysis_data,
-        visualizationKeys: Object.keys(pythonResponse.visualization || {})
-      });
-
-      // analysis_dataの詳細確認
-      const analysisData = pythonResponse.analysis_data || {};
-      console.log('🔍 analysis_data の詳細:', {
-        isArray: Array.isArray(analysisData),
-        isObject: typeof analysisData === 'object',
-        keys: Object.keys(analysisData),
-        factorScores: analysisData.factor_scores,
-        factorLoadings: analysisData.factor_loadings,
-        factorScoresType: typeof analysisData.factor_scores,
-        factorLoadingsType: typeof analysisData.factor_loadings
-      });
-
-      // 座標データの抽出（複数パターンを試行）
-      let factorScores = [];
-      let factorLoadings = [];
-
-      // パターン1: analysis_data.factor_scores
-      if (analysisData.factor_scores && Array.isArray(analysisData.factor_scores)) {
-        factorScores = analysisData.factor_scores;
-        console.log('✅ パターン1で因子得点を取得:', factorScores.length);
-      }
       
-      if (analysisData.factor_loadings && Array.isArray(analysisData.factor_loadings)) {
-        factorLoadings = analysisData.factor_loadings;
-        console.log('✅ パターン1で因子負荷量を取得:', factorLoadings.length);
-      }
+      // 座標データの抽出と変換
+      const coordinatesData = pythonResponse.coordinates_data || [];
+      const factorScores = coordinatesData.filter(item => item.point_type === 'observation') || 
+                          pythonResponse.analysis_data?.factor_scores || [];
+      const factorLoadings = coordinatesData.filter(item => item.point_type === 'variable') || 
+                            pythonResponse.analysis_data?.factor_loadings || [];
 
-      // パターン2: 直接配列の場合
-      if (factorScores.length === 0 && Array.isArray(analysisData)) {
-        const observationData = analysisData.filter(item => item.data_type === 'factor_score');
-        const variableData = analysisData.filter(item => item.data_type === 'factor_loading');
-        
-        if (observationData.length > 0) {
-          factorScores = observationData;
-          console.log('✅ パターン2で因子得点を取得:', factorScores.length);
-        }
-        
-        if (variableData.length > 0) {
-          factorLoadings = variableData;
-          console.log('✅ パターン2で因子負荷量を取得:', factorLoadings.length);
-        }
-      }
-
-      // パターン3: CoordinatesDataから変換
-      if (factorScores.length === 0 && pythonResponse.coordinates_data) {
-        const coordData = pythonResponse.coordinates_data;
-        factorScores = coordData.filter(item => item.point_type === 'observation');
-        factorLoadings = coordData.filter(item => item.point_type === 'variable');
-        console.log('✅ パターン3で座標データを取得:', { factorScores: factorScores.length, factorLoadings: factorLoadings.length });
-      }
-
-      console.log('🔍 最終的な座標データ:', {
-        factorScoresLength: factorScores.length,
-        factorScoresFirst: factorScores[0],
-        factorLoadingsLength: factorLoadings.length,
-        factorLoadingsFirst: factorLoadings[0]
-      });
-
-      // 因子得点データを変換
-      const transformedFactorScores = factorScores.map((item: any, index: number) => ({
-        name: item.name || item.point_name || item.sample_name || `Sample ${index + 1}`,
-        factor_1: item.dimension_1 || item.factor_1 || 0,
-        factor_2: item.dimension_2 || item.factor_2 || 0,
-        factor_3: item.dimension_3 || item.factor_3 || 0
+      // データの変換
+      const transformedFactorScores = factorScores.map((item, index) => ({
+        name: item.name || item.point_name || `Sample ${index + 1}`,
+        sample_name: item.name || item.point_name || `Sample ${index + 1}`,
+        factor_1: item.factor_1 !== undefined ? item.factor_1 : (item.dimension_1 || 0),
+        factor_2: item.factor_2 !== undefined ? item.factor_2 : (item.dimension_2 || 0),
+        factor_3: item.factor_3 !== undefined ? item.factor_3 : (item.dimension_3 || 0),
+        dimension_1: item.dimension_1 || item.factor_1 || 0,
+        dimension_2: item.dimension_2 || item.factor_2 || 0,
+        dimension_3: item.dimension_3 || item.factor_3 || 0
       }));
 
-      // 因子負荷量データを変換
-      const transformedFactorLoadings = factorLoadings.map((item: any, index: number) => ({
-        name: item.name || item.point_name || item.variable_name || `Variable ${index + 1}`,
-        factor_1: item.dimension_1 || item.factor_1 || 0,
-        factor_2: item.dimension_2 || item.factor_2 || 0,
-        factor_3: item.dimension_3 || item.factor_3 || 0
+      const transformedFactorLoadings = factorLoadings.map((item, index) => ({
+        name: item.name || item.point_name || `Variable ${index + 1}`,
+        variable_name: item.name || item.point_name || `Variable ${index + 1}`,
+        factor_1: item.factor_1 !== undefined ? item.factor_1 : (item.dimension_1 || 0),
+        factor_2: item.factor_2 !== undefined ? item.factor_2 : (item.dimension_2 || 0),
+        factor_3: item.factor_3 !== undefined ? item.factor_3 : (item.dimension_3 || 0),
+        dimension_1: item.dimension_1 || item.factor_1 || 0,
+        dimension_2: item.dimension_2 || item.factor_2 || 0,
+        dimension_3: item.dimension_3 || item.factor_3 || 0
       }));
 
-      console.log('🔄 変換後の座標データ:', {
-        transformedFactorScoresLength: transformedFactorScores.length,
-        transformedFactorLoadingsLength: transformedFactorLoadings.length,
-        transformedFactorScoresSample: transformedFactorScores[0],
-        transformedFactorLoadingsSample: transformedFactorLoadings[0]
-      });
-
-      // メタデータを構築
-      const metadata = pythonResponse.metadata || {};
-      const sessionInfo = pythonResponse.session_info || {};
-
-      // 結果オブジェクトを構築
-      const result = {
+      // 結果オブジェクトの構築
+      const result: FactorAnalysisResult = {
         session_id: sessionId,
         success: true,
+        session_name: pythonResponse.session_info?.session_name || '',
+        analysis_type: 'factor',
+        plot_base64: pythonResponse.visualization?.plot_image || '',
         metadata: {
-          session_name: sessionInfo.session_name || '',
-          filename: metadata.filename || sessionInfo.filename || '',
-          rows: metadata.rows || sessionInfo.row_count || 0,
-          columns: metadata.columns || sessionInfo.column_count || 0,
-          sample_names: metadata.sample_names || transformedFactorScores.map(s => s.name),
-          feature_names: metadata.feature_names || transformedFactorLoadings.map(l => l.name)
+          session_name: pythonResponse.session_info?.session_name || '',
+          filename: pythonResponse.metadata?.filename || '',
+          rows: pythonResponse.metadata?.rows || 0,
+          columns: pythonResponse.metadata?.columns || 0,
+          sample_names: transformedFactorScores.map(s => s.name),
+          feature_names: transformedFactorLoadings.map(l => l.name)
         },
         data: {
-          // 因子分析の基本結果データ
-          n_factors: sessionInfo.dimensions_count || 2,
-          rotation: sessionInfo.rotation || 'varimax',
-          standardized: sessionInfo.standardized || false,
+          n_factors: pythonResponse.session_info?.dimensions_count || 2,
+          rotation: pythonResponse.session_info?.rotation || 'varimax',
+          standardized: pythonResponse.session_info?.standardized || false,
           method: 'Factor Analysis',
           
           // 座標データ
           factor_scores: transformedFactorScores,
           loadings: transformedFactorLoadings,
           
-          // その他のデータ（プレースホルダー）
-          feature_names: metadata.feature_names || transformedFactorLoadings.map(l => l.name),
-          explained_variance: sessionInfo.explained_variance || [50, 30],
-          cumulative_variance: sessionInfo.cumulative_variance || [50, 80],
-          eigenvalues: sessionInfo.eigenvalues || [2.5, 1.8],
-          communalities: sessionInfo.communalities || new Array(transformedFactorLoadings.length).fill(0.6),
+          // 従来形式
+          loadings_matrix: transformedFactorLoadings.map(loading => [
+            loading.factor_1,
+            loading.factor_2,
+            loading.factor_3
+          ]),
+          communalities: transformedFactorLoadings.map(loading => 
+            Math.pow(loading.factor_1, 2) + Math.pow(loading.factor_2, 2) + Math.pow(loading.factor_3, 2)
+          ),
+          uniquenesses: transformedFactorLoadings.map(loading => {
+            const comm = Math.pow(loading.factor_1, 2) + Math.pow(loading.factor_2, 2) + Math.pow(loading.factor_3, 2);
+            return 1 - comm;
+          }),
+          eigenvalues: [2.5, 1.8], // デフォルト値
+          explained_variance: [50, 30], // デフォルト値
+          cumulative_variance: [50, 80], // デフォルト値
           
-          // 前提条件（プレースホルダー）
+          feature_names: transformedFactorLoadings.map(l => l.name),
+          sample_names: transformedFactorScores.map(s => s.name),
+          
           assumptions: {
-            kmo_model: sessionInfo.kmo_model || 0.8,
+            kmo_model: 0.8,
             kmo_interpretation: 'Good',
-            bartlett_significant: true,
             bartlett_p_value: 0.001,
-            n_samples: metadata.rows || 100,
-            n_features: metadata.columns || 10
+            bartlett_significant: true,
+            n_samples: transformedFactorScores.length,
+            n_features: transformedFactorLoadings.length
           }
         },
-        plot_base64: pythonResponse.visualization?.plot_image || null
+        session_info: {
+          session_id: sessionId,
+          session_name: pythonResponse.session_info?.session_name || '',
+          description: pythonResponse.session_info?.description || '',
+          tags: [],
+          analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || new Date().toISOString(),
+          filename: pythonResponse.session_info?.filename || '',
+          analysis_type: 'factor',
+          row_count: transformedFactorScores.length,
+          column_count: transformedFactorLoadings.length
+        }
       };
 
-      console.log('📊 最終的な結果オブジェクト:', {
-        success: result.success,
-        session_id: result.session_id,
-        hasFactorScores: result.data.factor_scores.length > 0,
-        hasLoadings: result.data.loadings.length > 0,
-        factorScoresCount: result.data.factor_scores.length,
-        loadingsCount: result.data.loadings.length
-      });
-
       setResult(result);
-      console.log('✅ Factor analysis session details loaded successfully');
 
     } catch (error) {
       console.error('❌ Factor analysis session detail fetch error:', error);
@@ -383,30 +330,30 @@ export default function FactorAnalysisPage() {
     }
   };
 
-  // セッションを削除
-  const deleteSession = async (sessionId: number) => {
-    if (!confirm('このセッションを削除しますか？')) return;
+    // セッションを削除
+    const deleteSession = async (sessionId: number) => {
+      if (!confirm('このセッションを削除しますか？')) return;
 
-    try {
-      const response = await fetch(`/api/sessions/${sessionId}`, {
-        method: 'DELETE'
-      });
-      
-      if (response.ok) {
-        fetchSessions();
-        if (result?.session_id === sessionId) {
-          setResult(null);
+      try {
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+          method: 'DELETE'
+        });
+        
+        if (response.ok) {
+          fetchSessions();
+          if (result?.session_id === sessionId) {
+            setResult(null);
+          }
+        } else {
+          const errorData = await response.json();
+          console.error('削除エラー:', errorData);
+          alert('削除に失敗しました');
         }
-      } else {
-        const errorData = await response.json();
-        console.error('削除エラー:', errorData);
-        alert('削除に失敗しました');
+      } catch (err) {
+        console.error('セッション削除エラー:', err);
+        alert('削除中にエラーが発生しました');
       }
-    } catch (err) {
-      console.error('セッション削除エラー:', err);
-      alert('削除中にエラーが発生しました');
-    }
-  };
+    };
 
   // CSVファイルをダウンロード
   const downloadCSV = async (sessionId: number) => {
@@ -1453,7 +1400,7 @@ export default function FactorAnalysisPage() {
             </div>
           )}
 
-          {/* 因子負荷量の詳細表 */}
+          {/* 因子負荷量の詳細表 - 修正版 */}
           <div className="mt-8">
             <h3 className="font-semibold mb-4">因子負荷量行列</h3>
             <p className="text-sm text-gray-600 mb-4">各変数が各因子にどの程度関連しているかを示します</p>
@@ -1472,117 +1419,222 @@ export default function FactorAnalysisPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(result.data.feature_names || []).map((feature, i) => (
-                    <tr key={feature} className={i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                      <td className="border border-gray-300 px-3 py-2 font-medium">
-                        {feature}
-                      </td>
-                      {(result.data.loadings?.[i] || []).map((loading, j) => (
-                        <td 
-                          key={j} 
-                          className={`border border-gray-300 px-3 py-2 text-center ${
-                            Math.abs(loading) >= 0.5 ? 'font-bold' : ''
-                          } ${
-                            Math.abs(loading) >= 0.7 ? 'bg-blue-100' : 
-                            Math.abs(loading) >= 0.5 ? 'bg-blue-50' : ''
-                          }`}
-                        >
-                          {formatNumber(loading)}
+                  {(result.data.feature_names || []).map((feature, i) => {
+                    // 因子負荷量データの取得（複数の形式に対応）
+                    let loadingValues: number[] = [];
+                    
+                    // パターン1: result.data.loadings_matrix が存在する場合
+                    if (result.data.loadings_matrix && Array.isArray(result.data.loadings_matrix) && result.data.loadings_matrix[i]) {
+                      loadingValues = Array.isArray(result.data.loadings_matrix[i]) 
+                        ? result.data.loadings_matrix[i] 
+                        : [result.data.loadings_matrix[i]];
+                    }
+                    // パターン2: result.data.loadings が座標データ形式の場合
+                    else if (result.data.loadings && Array.isArray(result.data.loadings)) {
+                      const loadingItem = result.data.loadings.find(
+                        (item: any) => item.name === feature || item.variable_name === feature
+                      );
+                      if (loadingItem) {
+                        loadingValues = [
+                          loadingItem.factor_1 !== undefined ? loadingItem.factor_1 : (loadingItem.dimension_1 || 0),
+                          loadingItem.factor_2 !== undefined ? loadingItem.factor_2 : (loadingItem.dimension_2 || 0),
+                          loadingItem.factor_3 !== undefined ? loadingItem.factor_3 : (loadingItem.dimension_3 || 0)
+                        ];
+                      }
+                    }
+                    // パターン3: 従来の配列形式の場合
+                    else if (result.data.loadings && Array.isArray(result.data.loadings) && result.data.loadings[i]) {
+                      loadingValues = Array.isArray(result.data.loadings[i]) 
+                        ? result.data.loadings[i] 
+                        : [result.data.loadings[i]];
+                    }
+                    
+                    // 共通性の計算
+                    const communality = result.data.communalities && result.data.communalities[i] !== undefined 
+                      ? result.data.communalities[i]
+                      : loadingValues.reduce((sum, val) => sum + Math.pow(val, 2), 0);
+                    
+                    return (
+                      <tr key={i} className={i % 2 === 0 ? 'bg-gray-50' : 'bg-white'}>
+                        <td className="border border-gray-300 px-3 py-2 font-medium">{feature}</td>
+                        {Array.from({ length: result.data.n_factors || 0 }, (_, factorIndex) => {
+                          const value = loadingValues[factorIndex] || 0;
+                          const isHighLoading = Math.abs(value) >= 0.5;
+                          return (
+                            <td 
+                              key={factorIndex} 
+                              className={`border border-gray-300 px-3 py-2 text-center ${
+                                isHighLoading ? 'bg-blue-100 font-semibold' : ''
+                              }`}
+                            >
+                              {value.toFixed(3)}
+                            </td>
+                          );
+                        })}
+                        <td className="border border-gray-300 px-3 py-2 text-center">
+                          <span className={communality >= 0.5 ? 'text-green-600 font-semibold' : 'text-orange-600'}>
+                            {communality.toFixed(3)}
+                          </span>
                         </td>
-                      ))}
-                      <td className="border border-gray-300 px-3 py-2 text-center">
-                        <span className={
-                          (result.data.communalities?.[i] || 0) >= 0.7 ? 'text-green-600 font-bold' :
-                          (result.data.communalities?.[i] || 0) >= 0.5 ? 'text-blue-600' :
-                          'text-red-600'
-                        }>
-                          {formatNumber(result.data.communalities?.[i] || 0)}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
             
             <div className="mt-4 text-sm text-gray-600">
-              <p><strong>解釈の目安:</strong></p>
-              <ul className="list-disc list-inside space-y-1">
-                <li>因子負荷量 ≥ 0.7: 強い関連（青色の背景）</li>
-                <li>因子負荷量 ≥ 0.5: 中程度の関連（薄青色の背景）</li>
-                <li>共通性 ≥ 0.7: 因子による説明が良好（緑色）</li>
-                <li>共通性 ≥ 0.5: 因子による説明が適切（青色）</li>
-              </ul>
+              <p>• <span className="bg-blue-100 px-1">ハイライト</span>: 因子負荷量の絶対値が0.5以上</p>
+              <p>• <span className="text-green-600 font-semibold">緑色</span>: 共通性が0.5以上（良好）</p>
+              <p>• <span className="text-orange-600">オレンジ色</span>: 共通性が0.5未満（要注意）</p>
             </div>
           </div>
 
           {/* 因子得点と因子負荷量の詳細データ - 因子負荷量行列の後に追加 */}
           <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* 因子得点 */}
-            <div className="bg-gray-50 rounded-lg p-4">
-              <h4 className="font-semibold mb-3 flex items-center">
-                <span className="w-3 h-3 bg-blue-500 rounded-full mr-2"></span>
-                因子得点（サンプル）
-                <span className="ml-2 text-sm text-gray-500">
-                  ({result.data.factor_scores?.length || 0}件)
-                </span>
-              </h4>
-              
-              <div className="max-h-64 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100 sticky top-0">
-                    <tr>
-                      <th className="text-left p-2">サンプル名</th>
-                      <th className="text-right p-2">第1因子</th>
-                      <th className="text-right p-2">第2因子</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {result.data.factor_scores && result.data.factor_scores.length > 0 ? (
-                      result.data.factor_scores.map((score, index) => (
+          {/* 因子得点 */}
+          <div className="bg-gray-50 rounded-lg p-4">
+            <h4 className="font-semibold mb-3 flex items-center">
+              <span className="w-3 h-3 bg-blue-500 rounded-full mr-2"></span>
+              因子得点（サンプル）
+              <span className="ml-2 text-sm text-gray-500">
+                ({(() => {
+                  // 因子得点データの取得を試行
+                  let factorScoresCount = 0;
+                  
+                  // パターン1: result.data.factor_scores が座標データ形式
+                  if (result.data.factor_scores && Array.isArray(result.data.factor_scores)) {
+                    factorScoresCount = result.data.factor_scores.length;
+                  }
+                  
+                  // パターン2: coordinatesDataから observation タイプを抽出
+                  if (factorScoresCount === 0 && result.data.coordinates_data) {
+                    factorScoresCount = result.data.coordinates_data.filter(
+                      (item: any) => item.point_type === 'observation'
+                    ).length;
+                  }
+                  
+                  // パターン3: sample_names の数
+                  if (factorScoresCount === 0 && result.metadata.sample_names) {
+                    factorScoresCount = result.metadata.sample_names.length;
+                  }
+                  
+                  return factorScoresCount;
+                })()}件)
+              </span>
+            </h4>
+            
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-100 sticky top-0">
+                  <tr>
+                    <th className="text-left p-2">サンプル名</th>
+                    <th className="text-right p-2">第1因子</th>
+                    <th className="text-right p-2">第2因子</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-200">
+                  {(() => {
+                    // 因子得点データの取得を試行
+                    let factorScoresData: any[] = [];
+                    
+                    // パターン1: result.data.factor_scores が座標データ形式
+                    if (result.data.factor_scores && Array.isArray(result.data.factor_scores) && result.data.factor_scores.length > 0) {
+                      factorScoresData = result.data.factor_scores;
+                    }
+                    
+                    // パターン2: coordinatesDataから observation タイプを抽出
+                    if (factorScoresData.length === 0 && result.data.coordinates_data) {
+                      factorScoresData = result.data.coordinates_data.filter(
+                        (item: any) => item.point_type === 'observation'
+                      );
+                    }
+                    
+                    // パターン3: 従来の配列形式の factor_scores
+                    if (factorScoresData.length === 0 && result.data.factor_scores && Array.isArray(result.data.factor_scores)) {
+                      // 従来形式の場合、sample_names と組み合わせ
+                      factorScoresData = (result.metadata.sample_names || []).map((name: string, index: number) => {
+                        const scores = result.data.factor_scores[index] || [];
+                        return {
+                          name,
+                          factor_1: Array.isArray(scores) ? scores[0] : scores,
+                          factor_2: Array.isArray(scores) ? scores[1] : undefined
+                        };
+                      });
+                    }
+                    
+                    console.log('🔍 因子得点データ確認:', {
+                      pattern1: result.data.factor_scores?.length || 0,
+                      pattern2: result.data.coordinates_data?.filter((item: any) => item.point_type === 'observation').length || 0,
+                      pattern3: result.metadata.sample_names?.length || 0,
+                      finalData: factorScoresData.length,
+                      sampleData: factorScoresData[0]
+                    });
+                    
+                    if (factorScoresData.length > 0) {
+                      return factorScoresData.map((score, index) => (
                         <tr key={index} className="hover:bg-gray-100">
                           <td className="p-2 font-medium">
-                            {score.name || score.sample_name || score.label || `Sample ${index + 1}`}
+                            {score.name || score.sample_name || score.point_name || `Sample ${index + 1}`}
                           </td>
                           <td className="p-2 text-right">
-                            {typeof score.factor_1 === 'number' ? score.factor_1.toFixed(3) : 
-                             typeof score.dimension_1 === 'number' ? score.dimension_1.toFixed(3) :
-                             typeof score.f1 === 'number' ? score.f1.toFixed(3) : 
-                             score.factor_1 !== undefined ? Number(score.factor_1).toFixed(3) :
-                             score.dimension_1 !== undefined ? Number(score.dimension_1).toFixed(3) : '-'}
+                            {(() => {
+                              // 第1因子の値を取得
+                              const value = score.factor_1 !== undefined ? score.factor_1 :
+                                          score.dimension_1 !== undefined ? score.dimension_1 :
+                                          score.f1 !== undefined ? score.f1 :
+                                          Array.isArray(score) ? score[0] : undefined;
+                              
+                              return value !== undefined && value !== null ? Number(value).toFixed(3) : '-';
+                            })()}
                           </td>
                           <td className="p-2 text-right">
-                            {typeof score.factor_2 === 'number' ? score.factor_2.toFixed(3) :
-                             typeof score.dimension_2 === 'number' ? score.dimension_2.toFixed(3) :
-                             typeof score.f2 === 'number' ? score.f2.toFixed(3) : 
-                             score.factor_2 !== undefined ? Number(score.factor_2).toFixed(3) :
-                             score.dimension_2 !== undefined ? Number(score.dimension_2).toFixed(3) : '-'}
+                            {(() => {
+                              // 第2因子の値を取得
+                              const value = score.factor_2 !== undefined ? score.factor_2 :
+                                          score.dimension_2 !== undefined ? score.dimension_2 :
+                                          score.f2 !== undefined ? score.f2 :
+                                          Array.isArray(score) ? score[1] : undefined;
+                              
+                              return value !== undefined && value !== null ? Number(value).toFixed(3) : '-';
+                            })()}
                           </td>
                         </tr>
-                      ))
-                    ) : result.metadata.sample_names && result.metadata.sample_names.length > 0 ? (
-                      result.metadata.sample_names.map((name, index) => (
+                      ));
+                    } else {
+                      // データが見つからない場合はsample_namesから生成
+                      const sampleNames = result.metadata.sample_names || 
+                                        Array.from({ length: 100 }, (_, i) => `Sample ${i + 1}`);
+                      
+                      return sampleNames.map((name: string, index: number) => (
                         <tr key={`fallback-${index}`} className="hover:bg-gray-100">
                           <td className="p-2 font-medium">{name}</td>
                           <td className="p-2 text-right text-gray-400">データなし</td>
                           <td className="p-2 text-right text-gray-400">データなし</td>
                         </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={3} className="p-4 text-center text-gray-500">
-                          因子得点データがありません
-                          <br />
-                          <span className="text-xs">
-                            履歴から表示する場合、データが正しく保存されていない可能性があります
-                          </span>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      ));
+                    }
+                  })()}
+                </tbody>
+              </table>
             </div>
+            
+            {/* デバッグ情報表示（開発時のみ） */}
+            {process.env.NODE_ENV === 'development' && (
+              <div className="mt-2 p-2 bg-yellow-50 rounded text-xs">
+                <details>
+                  <summary className="cursor-pointer text-yellow-700">🔍 デバッグ情報</summary>
+                  <div className="mt-2 space-y-1 text-yellow-600">
+                    <div>factor_scores 型: {typeof result.data.factor_scores}</div>
+                    <div>factor_scores 長さ: {Array.isArray(result.data.factor_scores) ? result.data.factor_scores.length : 'N/A'}</div>
+                    <div>coordinates_data 存在: {result.data.coordinates_data ? 'Yes' : 'No'}</div>
+                    <div>sample_names 長さ: {result.metadata.sample_names?.length || 0}</div>
+                    <div>最初のfactor_score: {JSON.stringify(result.data.factor_scores?.[0])}</div>
+                  </div>
+                </details>
+              </div>
+            )}
+          </div>
 
             {/* 因子負荷量（座標形式） */}
             <div className="bg-gray-50 rounded-lg p-4">
