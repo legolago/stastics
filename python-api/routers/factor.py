@@ -292,3 +292,316 @@ async def get_factor_session_detail(
             status_code=500,
             detail=f"セッション詳細の取得中にエラーが発生しました: {str(e)}",
         )
+
+
+# routers/factor.py に追加する関数（修正版）
+
+
+@router.get("/download/{session_id}/details")
+async def download_factor_details(session_id: int, db: Session = Depends(get_db)):
+    """因子分析結果詳細をCSV形式でダウンロード"""
+    try:
+        import csv
+        import io
+        from fastapi.responses import Response
+        from models import (
+            AnalysisSession,
+            EigenvalueData,
+            AnalysisMetadata,
+            CoordinatesData,
+        )
+
+        print(f"Starting factor details download for session: {session_id}")
+
+        # セッション情報を取得
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        if session.analysis_type != "factor":
+            raise HTTPException(
+                status_code=400, detail="因子分析のセッションではありません"
+            )
+
+        print(f"Session found: {session.session_name}")
+
+        # メタデータを取得
+        metadata_entries = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
+
+        # 座標データを取得
+        coordinates_data = (
+            db.query(CoordinatesData)
+            .filter(CoordinatesData.session_id == session_id)
+            .all()
+        )
+
+        # 固有値データを取得
+        eigenvalue_data = (
+            db.query(EigenvalueData)
+            .filter(EigenvalueData.session_id == session_id)
+            .all()
+        )
+
+        print(
+            f"Found {len(metadata_entries)} metadata entries, {len(coordinates_data)} coordinates, {len(eigenvalue_data)} eigenvalues"
+        )
+
+        # CSVデータを作成
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # セッション情報
+        writer.writerow(["セッション情報"])
+        writer.writerow(["項目", "値"])
+        writer.writerow(["セッション名", session.session_name])
+        writer.writerow(["ファイル名", session.original_filename])
+        writer.writerow(["分析手法", "因子分析"])
+        writer.writerow(
+            ["分析日時", session.analysis_timestamp.strftime("%Y-%m-%d %H:%M:%S")]
+        )
+        writer.writerow(["サンプル数", session.row_count])
+        writer.writerow(["変数数", session.column_count])
+        writer.writerow([])
+
+        # 固有値と寄与率
+        if eigenvalue_data:
+            writer.writerow(["因子の固有値と寄与率"])
+            writer.writerow(["因子", "固有値", "寄与率(%)", "累積寄与率(%)"])
+
+            for eigenval in sorted(eigenvalue_data, key=lambda x: x.dimension_number):
+                eigenvalue = eigenval.eigenvalue if eigenval.eigenvalue else 0
+                explained_variance = (
+                    eigenval.explained_inertia if eigenval.explained_inertia else 0
+                )
+                cumulative_variance = (
+                    eigenval.cumulative_inertia if eigenval.cumulative_inertia else 0
+                )
+
+                writer.writerow(
+                    [
+                        f"Factor{eigenval.dimension_number}",
+                        f"{eigenvalue:.8f}",
+                        f"{explained_variance*100:.2f}",
+                        f"{cumulative_variance*100:.2f}",
+                    ]
+                )
+            writer.writerow([])
+
+        # 因子負荷量（変数座標）
+        variable_coords = [
+            coord for coord in coordinates_data if coord.point_type == "variable"
+        ]
+        if variable_coords:
+            writer.writerow(["因子負荷量"])
+            writer.writerow(["変数名", "Factor1", "Factor2", "Factor3", "共通性"])
+            for coord in variable_coords:
+                # 共通性を計算（因子負荷量の二乗和）
+                f1 = coord.dimension_1 if coord.dimension_1 else 0.0
+                f2 = coord.dimension_2 if coord.dimension_2 else 0.0
+                f3 = coord.dimension_3 if coord.dimension_3 else 0.0
+                communality = f1**2 + f2**2 + f3**2
+
+                writer.writerow(
+                    [
+                        coord.point_name,
+                        f"{f1:.6f}",
+                        f"{f2:.6f}",
+                        f"{f3:.6f}",
+                        f"{communality:.6f}",
+                    ]
+                )
+            writer.writerow([])
+
+        # 因子得点（サンプル座標）
+        sample_coords = [
+            coord for coord in coordinates_data if coord.point_type == "observation"
+        ]
+        if sample_coords:
+            writer.writerow(["因子得点"])
+            writer.writerow(["サンプル名", "Factor1", "Factor2", "Factor3"])
+            for coord in sample_coords:
+                writer.writerow(
+                    [
+                        coord.point_name,
+                        f"{coord.dimension_1:.6f}" if coord.dimension_1 else "0.000000",
+                        f"{coord.dimension_2:.6f}" if coord.dimension_2 else "0.000000",
+                        f"{coord.dimension_3:.6f}" if coord.dimension_3 else "0.000000",
+                    ]
+                )
+            writer.writerow([])
+
+        # CSV内容を取得
+        csv_content = output.getvalue()
+        output.close()
+
+        print(f"Generated CSV content length: {len(csv_content)} characters")
+
+        # ファイル名設定
+        filename = f"factor_details_{session_id}.csv"
+
+        # Responseを作成
+        return Response(
+            content=csv_content.encode("utf-8-sig"),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"詳細CSV出力エラー: {str(e)}")
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=f"詳細CSV出力中にエラーが発生しました: {str(e)}"
+        )
+
+
+@router.get("/download/{session_id}/loadings")
+async def download_factor_loadings(session_id: int, db: Session = Depends(get_db)):
+    """因子負荷量をCSV形式でダウンロード"""
+    try:
+        from models import AnalysisSession, CoordinatesData
+
+        # セッション情報を取得
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        if session.analysis_type != "factor":
+            raise HTTPException(
+                status_code=400, detail="因子分析のセッションではありません"
+            )
+
+        # 変数座標データ（因子負荷量）を取得
+        loadings = (
+            db.query(CoordinatesData)
+            .filter(
+                CoordinatesData.session_id == session_id,
+                CoordinatesData.point_type == "variable",
+            )
+            .all()
+        )
+
+        if not loadings:
+            raise HTTPException(status_code=404, detail="因子負荷量が見つかりません")
+
+        # CSVデータを作成
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # ヘッダー
+        writer.writerow(
+            ["variable_name", "Factor1", "Factor2", "Factor3", "communality"]
+        )
+
+        # データ行
+        for loading in loadings:
+            f1 = loading.dimension_1 if loading.dimension_1 is not None else 0.0
+            f2 = loading.dimension_2 if loading.dimension_2 is not None else 0.0
+            f3 = loading.dimension_3 if loading.dimension_3 is not None else 0.0
+            communality = f1**2 + f2**2 + f3**2
+
+            writer.writerow([loading.point_name, f1, f2, f3, communality])
+
+        output.seek(0)
+
+        # レスポンス作成
+        response = StreamingResponse(
+            io.StringIO(output.getvalue()),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=factor_loadings_{session_id}.csv"
+            },
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"因子負荷量CSV出力エラー: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"因子負荷量CSV出力中にエラーが発生しました: {str(e)}",
+        )
+
+
+@router.get("/download/{session_id}/scores")
+async def download_factor_scores(session_id: int, db: Session = Depends(get_db)):
+    """因子得点をCSV形式でダウンロード"""
+    try:
+        from models import AnalysisSession, CoordinatesData
+
+        # セッション情報を取得
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+
+        if session.analysis_type != "factor":
+            raise HTTPException(
+                status_code=400, detail="因子分析のセッションではありません"
+            )
+
+        # サンプル座標データ（因子得点）を取得
+        scores = (
+            db.query(CoordinatesData)
+            .filter(
+                CoordinatesData.session_id == session_id,
+                CoordinatesData.point_type == "observation",
+            )
+            .all()
+        )
+
+        if not scores:
+            raise HTTPException(status_code=404, detail="因子得点が見つかりません")
+
+        # CSVデータを作成
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # ヘッダー
+        writer.writerow(["sample_name", "Factor1", "Factor2", "Factor3"])
+
+        # データ行
+        for score in scores:
+            writer.writerow(
+                [
+                    score.point_name,
+                    score.dimension_1 if score.dimension_1 is not None else 0.0,
+                    score.dimension_2 if score.dimension_2 is not None else 0.0,
+                    score.dimension_3 if score.dimension_3 is not None else 0.0,
+                ]
+            )
+
+        output.seek(0)
+
+        # レスポンス作成
+        response = StreamingResponse(
+            io.StringIO(output.getvalue()),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=factor_scores_{session_id}.csv"
+            },
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"因子得点CSV出力エラー: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"因子得点CSV出力中にエラーが発生しました: {str(e)}"
+        )
