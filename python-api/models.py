@@ -265,6 +265,7 @@ class AnalysisTypes:
     PCA = "pca"
     FACTOR = "factor"
     CLUSTER = "cluster"
+    REGRESSION = "regression"  # 🆕 追加
 
     @classmethod
     def all(cls):
@@ -273,6 +274,23 @@ class AnalysisTypes:
     @classmethod
     def is_valid(cls, analysis_type: str):
         return analysis_type in cls.all()
+
+
+class SessionTag(Base):
+    __tablename__ = "session_tags"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("analysis_sessions.id"), nullable=False)
+    tag_name = Column(String(100), nullable=False)
+    created_at = Column(TIMESTAMP, default=datetime.utcnow)
+
+    # 一意制約
+    __table_args__ = (
+        UniqueConstraint("session_id", "tag_name", name="uq_session_tag"),
+    )
+
+    # リレーション
+    session = relationship("AnalysisSession")
 
 
 # 🆕 メタデータタイプの定数
@@ -292,6 +310,12 @@ class MetadataTypes:
     CLUSTER_ASSIGNMENTS = "cluster_assignments"
     CLUSTER_METRICS = "cluster_metrics"
 
+    # 🆕 回帰分析用
+    REGRESSION_STATS = "regression_stats"
+    REGRESSION_COEFFICIENTS = "regression_coefficients"
+    REGRESSION_PREDICTIONS = "regression_predictions"
+    REGRESSION_RESIDUALS = "regression_residuals"
+
     @classmethod
     def get_types_for_analysis(cls, analysis_type: str):
         """分析手法に対応するメタデータタイプを取得"""
@@ -310,6 +334,12 @@ class MetadataTypes:
                 cls.CLUSTER_CENTERS,
                 cls.CLUSTER_ASSIGNMENTS,
                 cls.CLUSTER_METRICS,
+            ],
+            AnalysisTypes.REGRESSION: [
+                cls.REGRESSION_STATS,
+                cls.REGRESSION_COEFFICIENTS,
+                cls.REGRESSION_PREDICTIONS,
+                cls.REGRESSION_RESIDUALS,
             ],
         }
         return type_mapping.get(analysis_type, [])

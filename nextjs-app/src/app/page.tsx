@@ -78,7 +78,7 @@ export default function StatisticsHomePage() {
       name: '回帰分析',
       description: '変数間の関係性をモデル化し、予測や要因分析を行います',
       status: 'disabled',
-      path: '/regression',
+      path: '/available',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />

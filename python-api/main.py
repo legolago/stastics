@@ -3,7 +3,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import matplotlib
-from routers.correspondence import router as correspondence_router
 import logging
 
 matplotlib.use("Agg")
@@ -12,7 +11,7 @@ matplotlib.use("Agg")
 from models import create_tables
 
 # ルーターのインポート
-from routers import correspondence, sessions, pca, factor, cluster
+from routers import correspondence, sessions, pca, factor, cluster, regression
 
 # ログ設定
 logging.basicConfig(level=logging.INFO)
@@ -45,11 +44,20 @@ except ImportError:
     cluster_available = False
     print("⚠️ Cluster router not found")
 
+# 🆕 回帰分析のインポート
+try:
+    # regressionは上記でインポート済みなので、存在チェックのみ
+    regression_available = hasattr(regression, "router")
+    print("✓ Regression router loaded from routers.regression")
+except (ImportError, NameError):
+    regression_available = False
+    print("⚠️ Regression router not found")
+
 # FastAPIアプリケーションを作成
 app = FastAPI(
     title="多変量解析API",
     version="2.0.0",
-    description="コレスポンデンス分析、主成分分析、因子分析、クラスター分析などの多変量解析を提供するAPI",
+    description="コレスポンデンス分析、主成分分析、因子分析、クラスター分析、回帰分析などの多変量解析を提供するAPI",
 )
 
 # データベーステーブルを作成
@@ -85,6 +93,13 @@ if cluster_available:
 else:
     print("⚠️ Cluster router not registered - file not found")
 
+# 🆕 回帰分析ルーターを条件付きで登録
+if regression_available:
+    app.include_router(regression.router, prefix="/api")
+    print("  - Regression: /api/regression")
+else:
+    print("⚠️ Regression router not registered - file not found")
+
 
 @app.get("/")
 async def root():
@@ -97,9 +112,12 @@ async def root():
     if cluster_available:
         supported_methods.append("cluster")
 
+    if regression_available:
+        supported_methods.append("regression")
+
     return {
         "message": "多変量解析API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "supported_methods": supported_methods,
     }
 
@@ -112,6 +130,7 @@ async def health_check():
         "version": "2.0.0",
         "pca_available": pca_available,
         "cluster_available": cluster_available,
+        "regression_available": regression_available,
     }
 
 
@@ -162,6 +181,40 @@ async def get_available_methods():
                     "assignments": "/api/cluster/download/{session_id}/assignments",
                     "details": "/api/cluster/download/{session_id}/details",
                 },
+            }
+        )
+
+    if regression_available:
+        methods.append(
+            {
+                "id": "regression",
+                "name": "回帰分析",
+                "description": "変数間の関係性をモデル化し予測を行う分析手法",
+                "endpoint": "/api/regression/analyze",
+                "status": "available",
+                "parameters_endpoint": "/api/regression/parameters/validate",
+                "methods_endpoint": "/api/regression/methods",
+                "download_endpoints": {
+                    "predictions": "/api/regression/download/{session_id}/predictions",
+                    "details": "/api/regression/download/{session_id}/details",
+                },
+                "supported_methods": [
+                    {
+                        "name": "linear",
+                        "display_name": "単回帰分析",
+                        "description": "1つの説明変数による線形回帰",
+                    },
+                    {
+                        "name": "multiple",
+                        "display_name": "重回帰分析",
+                        "description": "複数の説明変数による線形回帰",
+                    },
+                    {
+                        "name": "polynomial",
+                        "display_name": "多項式回帰分析",
+                        "description": "1つの説明変数による多項式回帰",
+                    },
+                ],
             }
         )
 
