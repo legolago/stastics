@@ -1,6 +1,5 @@
-// app/api/pca/download/[sessionId]/loadings/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-
+// src/app/api/pca/download/[sessionId]/loadings/route.ts
+import { NextRequest } from 'next/server';
 
 export async function GET(
   request: NextRequest,
@@ -9,36 +8,32 @@ export async function GET(
   try {
     const sessionId = params.sessionId;
     
-    const fastApiUrl = process.env.FASTAPI_URL || 'http://python-api:8000';
-    console.log(`🔗 Downloading PCA loadings for session ${sessionId} from:`, fastApiUrl);
+    const backendUrl = `${process.env.BACKEND_URL || 'http://localhost:8000'}/pca/download/${sessionId}/loadings`;
     
-    const response = await fetch(`${fastApiUrl}/api/pca/download/${sessionId}/loadings`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ FastAPI loadings download error:', errorText);
-      return NextResponse.json(
-        { error: '因子負荷量のダウンロードに失敗しました', details: errorText },
-        { status: response.status }
-      );
-    }
-
-    // CSVファイルとして返す
-    const csvContent = await response.text();
-    console.log(`✅ PCA loadings downloaded successfully for session ${sessionId}`);
-    
-    return new NextResponse(csvContent, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="pca_loadings_${sessionId}.csv"`,
-      },
+    const response = await fetch(backendUrl, {
+      method: 'GET',
     });
     
+    if (!response.ok) {
+      throw new Error(`Backend responded with status: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    
+    const contentDisposition = response.headers.get('Content-Disposition') || 
+      `attachment; filename="pca_loadings_${sessionId}.csv"`;
+    
+    return new Response(blob, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': contentDisposition,
+      },
+    });
   } catch (error) {
-    console.error('❌ PCA loadings download error:', error);
-    return NextResponse.json(
-      { error: '因子負荷量のダウンロード中にエラーが発生しました' },
+    console.error('PCA loadings download API error:', error);
+    return Response.json(
+      { error: 'PCA負荷量ダウンロードでエラーが発生しました' },
       { status: 500 }
     );
   }

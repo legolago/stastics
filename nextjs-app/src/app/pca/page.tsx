@@ -138,171 +138,159 @@ export default function PCAPage() {
 
 // 修正版 fetchSessionDetail 関数
   const fetchSessionDetail = async (sessionId: number) => {
-    try {
-      console.log('🔍 PCA分析セッション詳細取得開始:', sessionId);
-      
-      const response = await fetch(`/api/sessions/${sessionId}`);
-      
-      if (!response.ok) {
-        console.error(`HTTP ${response.status}: ${response.statusText}`);
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-        alert('セッション詳細の取得に失敗しました');
-        return;
-      }
-
-      const data: SessionDetailResponse = await response.json();
-      console.log('📥 PCA session detail response:', data);
-
-      if (data.success && data.data) {
-        const pythonResponse = data.data.success ? data.data.data : data.data;
-        console.log('🔍 Python response structure:', {
-          keys: Object.keys(pythonResponse),
-          analysisData: pythonResponse.analysis_data ? Object.keys(pythonResponse.analysis_data) : null,
-        });
-
-        // 座標データの取得を実際のデータ構造に合わせて修正
-        let scores = [];
-        let loadings = [];
-
-        // scores は component_scores という名前で格納されている
-        if (pythonResponse.analysis_data?.component_scores) {
-          const componentScores = pythonResponse.analysis_data.component_scores;
-          const sampleNames = pythonResponse.analysis_data?.sample_names || [];
-          
-          console.log('🎯 Component scores found:', {
-            type: typeof componentScores,
-            isArray: Array.isArray(componentScores),
-            length: componentScores.length,
-            sampleNamesLength: sampleNames.length,
-            firstRow: componentScores[0]
-          });
-
-          // component_scores を適切な形式に変換
-          if (Array.isArray(componentScores) && sampleNames.length > 0) {
-            scores = componentScores.map((scoreRow: number[], index: number) => ({
-              name: sampleNames[index] || `Sample ${index + 1}`,
-              dimension_1: scoreRow[0] || 0,
-              dimension_2: scoreRow[1] || 0,
-              pc1: scoreRow[0] || 0,
-              pc2: scoreRow[1] || 0
-            }));
-          }
-        }
-
-        // loadings の処理
-        if (pythonResponse.analysis_data?.loadings) {
-          const loadingsData = pythonResponse.analysis_data.loadings;
-          const featureNames = pythonResponse.analysis_data?.feature_names || [];
-          
-          console.log('🎯 Loadings found:', {
-            type: typeof loadingsData,
-            isArray: Array.isArray(loadingsData),
-            length: loadingsData.length,
-            featureNamesLength: featureNames.length,
-            firstRow: loadingsData[0]
-          });
-
-          // loadings を適切な形式に変換
-          if (Array.isArray(loadingsData) && featureNames.length > 0) {
-            loadings = loadingsData.map((loadingRow: number[], index: number) => ({
-              name: featureNames[index] || `Variable ${index + 1}`,
-              dimension_1: loadingRow[0] || 0,
-              dimension_2: loadingRow[1] || 0,
-              pc1: loadingRow[0] || 0,
-              pc2: loadingRow[1] || 0
-            }));
-          }
-        }
-
-        console.log('🔍 座標データの最終取得結果:', {
-          scoresLength: scores.length,
-          loadingsLength: loadings.length,
-          scoresFirst: scores[0],
-          loadingsFirst: loadings[0]
-        });
-
-        // プロット画像の取得
-        let plotImage = '';
-        if (pythonResponse.visualization?.plot_image) {
-          plotImage = pythonResponse.visualization.plot_image;
-        } else if (pythonResponse.plot_image) {
-          plotImage = pythonResponse.plot_image;
-        } else if (pythonResponse.analysis_data?.plot_image) {
-          plotImage = pythonResponse.analysis_data.plot_image;
-        }
-
-        // サンプル名と変数名の取得
-        const sampleNames = pythonResponse.analysis_data?.sample_names || [];
-        const featureNames = pythonResponse.analysis_data?.feature_names || [];
-
-        // PCA分析結果への型安全な変換処理
-        const analysisResult: PCAAnalysisResult = {
-          success: true,
-          session_id: pythonResponse.session_info?.session_id || sessionId,
-          session_name: pythonResponse.session_info?.session_name || '',
-          analysis_type: 'pca',
-          plot_base64: plotImage,
-          data: {
-            n_components: pythonResponse.analysis_data?.n_components || 2,
-            n_samples: pythonResponse.analysis_data?.n_samples || pythonResponse.metadata?.row_count || sampleNames.length || 0,
-            n_features: pythonResponse.analysis_data?.n_features || pythonResponse.metadata?.column_count || featureNames.length || 0,
-            standardized: pythonResponse.analysis_data?.standardized || false,
-            explained_variance_ratio: pythonResponse.analysis_data?.explained_variance_ratio || [],
-            cumulative_variance_ratio: pythonResponse.analysis_data?.cumulative_variance_ratio || [],
-            eigenvalues: pythonResponse.analysis_data?.eigenvalues || [],
-            kmo: pythonResponse.analysis_data?.kmo || 0,
-            determinant: pythonResponse.analysis_data?.determinant || 0,
-            plot_image: plotImage,
-            coordinates: {
-              scores: scores,
-              loadings: loadings
-            }
-          },
-          metadata: {
-            session_name: pythonResponse.session_info?.session_name || '',
-            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
-            rows: pythonResponse.metadata?.row_count || sampleNames.length || 0,
-            columns: pythonResponse.metadata?.column_count || featureNames.length || 0,
-            sample_names: sampleNames,
-            feature_names: featureNames
-          },
-          session_info: {
-            session_id: pythonResponse.session_info?.session_id || sessionId,
-            session_name: pythonResponse.session_info?.session_name || '',
-            description: pythonResponse.session_info?.description || '',
-            tags: pythonResponse.session_info?.tags || [],
-            analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-            filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.original_filename || '',
-            analysis_type: 'pca',
-            row_count: pythonResponse.metadata?.row_count || sampleNames.length || 0,
-            column_count: pythonResponse.metadata?.column_count || featureNames.length || 0
-          }
-        };
-
-        console.log('📊 Building PCA analysis result with data:', {
-          success: analysisResult.success,
-          session_id: analysisResult.session_id,
-          hasCoordinates: !!analysisResult.data.coordinates,
-          scoresCount: analysisResult.data.coordinates?.scores?.length || 0,
-          loadingsCount: analysisResult.data.coordinates?.loadings?.length || 0,
-          hasPlotImage: !!analysisResult.plot_base64,
-          sampleNamesCount: analysisResult.metadata.sample_names?.length || 0,
-          featureNamesCount: analysisResult.metadata.feature_names?.length || 0
-        });
-
-        setResult(analysisResult);
-        console.log('✅ PCA session details loaded successfully');
-        
-      } else {
-        console.error('Invalid response format:', data);
-        alert('セッションデータの形式が不正です');
-      }
-    } catch (err) {
-      console.error('PCAセッション詳細取得エラー:', err);
-      alert('セッション詳細の取得中にエラーが発生しました');
+  try {
+    console.log('🔍 PCA分析セッション詳細取得開始:', sessionId);
+    
+    // 新しいPCA専用エンドポイントを使用
+    const response = await fetch(`/api/pca/sessions/${sessionId}`);
+    
+    if (!response.ok) {
+      console.error(`HTTP ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('Error response:', errorText);
+      alert('セッション詳細の取得に失敗しました');
+      return;
     }
-  };
+
+    const data: SessionDetailResponse = await response.json();
+    console.log('📥 PCA session detail response:', data);
+
+    if (data.success && data.data) {
+      const pythonResponse = data.data;
+      
+      // 新しいデータ構造に対応
+      let scores = [];
+      let loadings = [];
+
+      // component_scores → component_scores_data に変更
+      if (pythonResponse.analysis_data?.component_scores) {
+        scores = pythonResponse.analysis_data.component_scores.map((scoreData: any) => ({
+          name: scoreData.name || scoreData.sample_name,
+          dimension_1: scoreData.dimension_1 || scoreData.pc_1,
+          dimension_2: scoreData.dimension_2 || scoreData.pc_2,
+          pc1: scoreData.dimension_1 || scoreData.pc_1,
+          pc2: scoreData.dimension_2 || scoreData.pc_2
+        }));
+      }
+
+      // component_loadings → component_loadings_data に変更
+      if (pythonResponse.analysis_data?.component_loadings) {
+        loadings = pythonResponse.analysis_data.component_loadings.map((loadingData: any) => ({
+          name: loadingData.name || loadingData.variable_name,
+          dimension_1: loadingData.dimension_1 || loadingData.pc_1,
+          dimension_2: loadingData.dimension_2 || loadingData.pc_2,
+          pc1: loadingData.dimension_1 || loadingData.pc_1,
+          pc2: loadingData.dimension_2 || loadingData.pc_2
+        }));
+      }
+
+      // 残りの処理は同様...
+      
+    } else {
+      console.error('Invalid response format:', data);
+      alert('セッションデータの形式が不正です');
+    }
+  } catch (err) {
+    console.error('PCAセッション詳細取得エラー:', err);
+    alert('セッション詳細の取得中にエラーが発生しました');
+  }
+};
+
+const downloadPCALoadings = async (sessionId: number) => {
+  try {
+    console.log('Downloading PCA loadings CSV for session:', sessionId);
+    
+    const response = await fetch(`/api/pca/download/${sessionId}/loadings`);
+    if (!response.ok) {
+      throw new Error('主成分負荷量CSVダウンロードに失敗しました');
+    }
+    
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    
+    const contentDisposition = response.headers.get('Content-Disposition');
+    const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `pca_loadings_${sessionId}.csv`;
+    
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    console.log('PCA Loadings CSV download completed');
+    
+  } catch (err) {
+    console.error('PCA負荷量CSVダウンロードエラー:', err);
+    alert('主成分負荷量CSVファイルのダウンロードに失敗しました');
+  }
+};
+
+const downloadPCAScores = async (sessionId: number) => {
+  try {
+    console.log('Downloading PCA scores CSV for session:', sessionId);
+    
+    const response = await fetch(`/api/pca/download/${sessionId}/scores`);
+    if (!response.ok) {
+      throw new Error('主成分得点CSVダウンロードに失敗しました');
+    }
+    
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    
+    const contentDisposition = response.headers.get('Content-Disposition');
+    const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `pca_scores_${sessionId}.csv`;
+    
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    console.log('PCA Scores CSV download completed');
+    
+  } catch (err) {
+    console.error('PCA得点CSVダウンロードエラー:', err);
+    alert('主成分得点CSVファイルのダウンロードに失敗しました');
+  }
+};
+// 2. CSVダウンロード関数の追加
+const downloadPCADetails = async (sessionId: number) => {
+  try {
+    console.log('Downloading PCA details CSV for session:', sessionId);
+    
+    const response = await fetch(`/api/pca/download/${sessionId}/details`);
+    if (!response.ok) {
+      throw new Error('詳細CSVダウンロードに失敗しました');
+    }
+    
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    
+    const contentDisposition = response.headers.get('Content-Disposition');
+    const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+    const fileName = fileNameMatch ? fileNameMatch[1].replace(/['"]/g, '') : `pca_details_${sessionId}.csv`;
+    
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    
+    console.log('PCA Details CSV download completed');
+    
+  } catch (err) {
+    console.error('PCA詳細CSVダウンロードエラー:', err);
+    alert('詳細CSVファイルのダウンロードに失敗しました');
+  }
+};
 
   // セッションを削除
   const deleteSession = async (sessionId: number) => {
@@ -928,6 +916,7 @@ export default function PCAPage() {
                   <span className="text-sm text-gray-500 mr-4">
                     セッションID: {result.session_id}
                   </span>
+                  {/* 元のCSVダウンロード */}
                   <button
                     onClick={() => downloadCSV(result.session_id)}
                     className="bg-green-600 text-white px-3 py-1 rounded-md hover:bg-green-700 text-sm flex items-center"
@@ -937,23 +926,46 @@ export default function PCAPage() {
                     </svg>
                     元CSV
                   </button>
+                  
+                  {/* 新しいダウンロードボタン群 */}
                   <button
-                    onClick={() => downloadAnalysisResultCSV(result)}
+                    onClick={() => downloadPCADetails(result.session_id)}
                     className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 text-sm flex items-center"
                   >
                     <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    分析詳細CSV
+                    詳細結果
                   </button>
+                  
+                  <button
+                    onClick={() => downloadPCALoadings(result.session_id)}
+                    className="bg-purple-600 text-white px-3 py-1 rounded-md hover:bg-purple-700 text-sm flex items-center"
+                  >
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                    </svg>
+                    負荷量
+                  </button>
+                  
+                  <button
+                    onClick={() => downloadPCAScores(result.session_id)}
+                    className="bg-orange-600 text-white px-3 py-1 rounded-md hover:bg-orange-700 text-sm flex items-center"
+                  >
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    得点
+                  </button>
+                  
                   <button
                     onClick={() => downloadPlotImage(result.session_id)}
-                    className="bg-purple-600 text-white px-3 py-1 rounded-md hover:bg-purple-700 text-sm flex items-center"
+                    className="bg-gray-600 text-white px-3 py-1 rounded-md hover:bg-gray-700 text-sm flex items-center"
                   >
                     <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    プロット画像
+                    画像
                   </button>
                 </>
               )}

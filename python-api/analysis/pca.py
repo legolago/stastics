@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,6 +6,7 @@ import matplotlib.patheffects as pe
 import io
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+from sqlalchemy.orm import Session  # ← この行を追加
 from .base import BaseAnalyzer
 
 
@@ -15,6 +16,7 @@ class PCAAnalyzer(BaseAnalyzer):
     def get_analysis_type(self) -> str:
         return "pca"
 
+    # 既存のメソッドは変更なし
     def analyze(
         self,
         df: pd.DataFrame,
@@ -480,54 +482,593 @@ KMO標本妥当性: {results['kmo']:.3f}
         file,
         plot_base64: str,
     ) -> Dict[str, Any]:
-        """レスポンスデータを作成"""
-        component_scores = results["component_scores"]
-        loadings = results["loadings"]
+        """レスポンスデータを作成（JSON serializable対応版）"""
+        try:
+            component_scores = results["component_scores"]
+            loadings = results["loadings"]
 
-        return {
-            "success": True,
-            "session_id": session_id,
-            "analysis_type": self.get_analysis_type(),
-            "data": {
-                "n_components": results.get("n_components", 0),
-                "n_samples": results.get("n_samples", 0),
-                "n_features": results.get("n_features", 0),
-                "standardized": results.get("standardized", False),
-                "explained_variance_ratio": [
-                    float(x) for x in results.get("explained_variance_ratio", [])
-                ],
-                "cumulative_variance_ratio": [
-                    float(x) for x in results.get("cumulative_variance_ratio", [])
-                ],
-                "eigenvalues": [float(x) for x in results.get("eigenvalues", [])],
-                "kmo": float(results.get("kmo", 0)),
-                "determinant": float(results.get("determinant", 0)),
-                "plot_image": plot_base64,
-                "coordinates": {
-                    "scores": [
+            # numpy配列をリストに変換する関数
+            def ensure_serializable(obj):
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, list):
+                    return [ensure_serializable(item) for item in obj]
+                elif isinstance(obj, dict):
+                    return {k: ensure_serializable(v) for k, v in obj.items()}
+                else:
+                    return obj
+
+            # 主成分得点データを新形式で作成（serializable版）
+            component_scores_data = []
+            for i, (sample_name, scores) in enumerate(zip(df.index, component_scores)):
+                if isinstance(scores, (list, np.ndarray)) and len(scores) > 0:
+                    scores_list = ensure_serializable(scores)
+                    component_scores_data.append(
                         {
-                            "name": str(name),
-                            "dimension_1": float(component_scores[i, 0]),
-                            "dimension_2": float(component_scores[i, 1]),
+                            "name": str(sample_name),
+                            "sample_name": str(sample_name),
+                            "pc_1": (
+                                float(scores_list[0]) if len(scores_list) > 0 else 0.0
+                            ),
+                            "pc_2": (
+                                float(scores_list[1]) if len(scores_list) > 1 else 0.0
+                            ),
+                            "pc_3": (
+                                float(scores_list[2]) if len(scores_list) > 2 else 0.0
+                            ),
+                            "dimension_1": (
+                                float(scores_list[0]) if len(scores_list) > 0 else 0.0
+                            ),
+                            "dimension_2": (
+                                float(scores_list[1]) if len(scores_list) > 1 else 0.0
+                            ),
+                            "dimension_3": (
+                                float(scores_list[2]) if len(scores_list) > 2 else 0.0
+                            ),
                         }
-                        for i, name in enumerate(results["sample_names"])
+                    )
+
+            # 主成分負荷量データを新形式で作成（serializable版）
+            component_loadings_data = []
+            for i, (feature_name, loading_vals) in enumerate(zip(df.columns, loadings)):
+                if (
+                    isinstance(loading_vals, (list, np.ndarray))
+                    and len(loading_vals) > 0
+                ):
+                    loading_list = ensure_serializable(loading_vals)
+                    component_loadings_data.append(
+                        {
+                            "name": str(feature_name),
+                            "variable_name": str(feature_name),
+                            "pc_1": (
+                                float(loading_list[0]) if len(loading_list) > 0 else 0.0
+                            ),
+                            "pc_2": (
+                                float(loading_list[1]) if len(loading_list) > 1 else 0.0
+                            ),
+                            "pc_3": (
+                                float(loading_list[2]) if len(loading_list) > 2 else 0.0
+                            ),
+                            "dimension_1": (
+                                float(loading_list[0]) if len(loading_list) > 0 else 0.0
+                            ),
+                            "dimension_2": (
+                                float(loading_list[1]) if len(loading_list) > 1 else 0.0
+                            ),
+                            "dimension_3": (
+                                float(loading_list[2]) if len(loading_list) > 2 else 0.0
+                            ),
+                        }
+                    )
+
+            # 全てのnumpy配列をserializable形式に変換
+            serializable_results = ensure_serializable(results)
+
+            return {
+                "success": True,
+                "session_id": int(session_id),
+                "analysis_type": self.get_analysis_type(),
+                "data": {
+                    "n_components": int(serializable_results["n_components"]),
+                    "standardized": bool(serializable_results["standardized"]),
+                    # 従来形式（互換性のため）- serializable版
+                    "loadings": ensure_serializable(loadings),
+                    "eigenvalues": ensure_serializable(
+                        serializable_results["eigenvalues"]
+                    ),
+                    "explained_variance_ratio": ensure_serializable(
+                        serializable_results["explained_variance_ratio"]
+                    ),
+                    "cumulative_variance_ratio": ensure_serializable(
+                        serializable_results["cumulative_variance_ratio"]
+                    ),
+                    "component_scores": ensure_serializable(component_scores),
+                    # 新形式（座標データ）
+                    "component_scores_data": component_scores_data,
+                    "component_loadings_data": component_loadings_data,
+                    # 主成分負荷量行列（フロントエンド用）
+                    "loadings_matrix": ensure_serializable(loadings),
+                    # 変数・サンプル名
+                    "feature_names": [
+                        str(x) for x in serializable_results["feature_names"]
                     ],
-                    "loadings": [
-                        {
-                            "name": str(name),
-                            "dimension_1": float(loadings[i, 0]),
-                            "dimension_2": float(loadings[i, 1]),
-                        }
-                        for i, name in enumerate(results["feature_names"])
+                    "sample_names": [
+                        str(x) for x in serializable_results["sample_names"]
+                    ],
+                    # 統計値
+                    "kmo": float(serializable_results.get("kmo", 0.0)),
+                    "determinant": float(serializable_results.get("determinant", 0.0)),
+                    # プロット画像
+                    "plot_image": str(plot_base64),
+                    # 座標形式（従来互換）- serializable版
+                    "coordinates": {
+                        "scores": [
+                            {
+                                "name": str(name),
+                                "dimension_1": (
+                                    float(ensure_serializable(component_scores[i])[0])
+                                    if len(ensure_serializable(component_scores[i])) > 0
+                                    else 0.0
+                                ),
+                                "dimension_2": (
+                                    float(ensure_serializable(component_scores[i])[1])
+                                    if len(ensure_serializable(component_scores[i])) > 1
+                                    else 0.0
+                                ),
+                            }
+                            for i, name in enumerate(df.index)
+                        ],
+                        "loadings": [
+                            {
+                                "name": str(name),
+                                "dimension_1": (
+                                    float(ensure_serializable(loadings[i])[0])
+                                    if len(ensure_serializable(loadings[i])) > 0
+                                    else 0.0
+                                ),
+                                "dimension_2": (
+                                    float(ensure_serializable(loadings[i])[1])
+                                    if len(ensure_serializable(loadings[i])) > 1
+                                    else 0.0
+                                ),
+                            }
+                            for i, name in enumerate(df.columns)
+                        ],
+                    },
+                },
+                "metadata": {
+                    "session_name": str(session_name),
+                    "filename": str(file.filename),
+                    "rows": int(df.shape[0]),
+                    "columns": int(df.shape[1]),
+                    "feature_names": [
+                        str(x) for x in serializable_results["feature_names"]
+                    ],
+                    "sample_names": [
+                        str(x) for x in serializable_results["sample_names"]
                     ],
                 },
-            },
-            "metadata": {
-                "session_name": session_name,
-                "filename": file.filename,
-                "rows": df.shape[0],
-                "columns": df.shape[1],
-                "sample_names": [str(x) for x in df.index],
-                "feature_names": [str(x) for x in df.columns],
-            },
-        }
+            }
+
+        except Exception as e:
+            print(f"❌ レスポンス作成エラー: {e}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            raise
+
+    def save_to_database(
+        self,
+        db: Session,
+        session_name: str,
+        description: Optional[str],
+        tags: List[str],
+        user_id: str,
+        file,
+        csv_text: str,
+        df: pd.DataFrame,
+        results: Dict[str, Any],
+        plot_base64: str,
+    ) -> int:
+        """データベース保存処理（factor形式に合わせて修正）"""
+        try:
+            print("=== PCA データベース保存開始 ===")
+
+            # 基底クラスのメソッドを呼び出し
+            if hasattr(super(), "save_to_database"):
+                session_id = super().save_to_database(
+                    db,
+                    session_name,
+                    description,
+                    tags,
+                    user_id,
+                    file,
+                    csv_text,
+                    df,
+                    results,
+                    plot_base64,
+                )
+            else:
+                # 基底クラスにメソッドがない場合の直接保存
+                session_id = self._save_session_directly(
+                    db,
+                    session_name,
+                    description,
+                    tags,
+                    user_id,
+                    file,
+                    csv_text,
+                    df,
+                    results,
+                    plot_base64,
+                )
+
+            # PCA特有のデータを追加保存
+            self._save_pca_specific_data(db, session_id, results)
+
+            # 座標データを保存
+            self._save_coordinates_data(db, session_id, df, results)
+
+            return session_id
+
+        except Exception as e:
+            print(f"❌ PCA データベース保存エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return 0
+
+    def _save_pca_specific_data(
+        self, db: Session, session_id: int, results: Dict[str, Any]
+    ):
+        """PCA特有のデータを保存"""
+        try:
+            from models import AnalysisMetadata
+
+            # 主成分負荷量メタデータ
+            if "loadings" in results:
+                pca_metadata = {
+                    "loadings": results["loadings"],
+                    "feature_names": results.get("feature_names", []),
+                    "sample_names": results.get("sample_names", []),
+                    "n_components": results.get("n_components", 0),
+                    "standardized": results.get("standardized", True),
+                }
+
+                metadata = AnalysisMetadata(
+                    session_id=session_id,
+                    metadata_type="pca_loadings",
+                    metadata_content=pca_metadata,
+                )
+                db.add(metadata)
+
+            # KMO統計メタデータ
+            if "kmo" in results:
+                kmo_metadata = AnalysisMetadata(
+                    session_id=session_id,
+                    metadata_type="pca_statistics",
+                    metadata_content={
+                        "kmo": results["kmo"],
+                        "determinant": results.get("determinant", 0),
+                        "total_inertia": results.get("total_inertia", 0),
+                    },
+                )
+                db.add(kmo_metadata)
+
+            db.commit()
+
+        except Exception as e:
+            print(f"PCA特有データ保存エラー: {e}")
+
+    def _save_session_directly(
+        self,
+        db: Session,
+        session_name: str,
+        description: Optional[str],
+        tags: List[str],
+        user_id: str,
+        file,
+        csv_text: str,
+        df: pd.DataFrame,
+        results: Dict[str, Any],
+        plot_base64: str,
+    ) -> int:
+        """基底クラスのメソッドがない場合の直接保存"""
+        try:
+            from models import AnalysisSession, VisualizationData, SessionTag
+
+            # セッション基本情報を保存
+            session = AnalysisSession(
+                session_name=session_name,
+                description=description,
+                analysis_type=self.get_analysis_type(),
+                filename=file.filename,
+                csv_content=csv_text,
+                user_id=user_id,
+                row_count=df.shape[0],
+                column_count=df.shape[1],
+                # PCA特有のメタデータ
+                dimensions_count=results.get("n_components", 0),
+                dimension_1_contribution=(
+                    results.get("explained_variance_ratio", [0])[0]
+                    if results.get("explained_variance_ratio")
+                    else 0
+                ),
+                dimension_2_contribution=(
+                    results.get("explained_variance_ratio", [0, 0])[1]
+                    if len(results.get("explained_variance_ratio", [])) > 1
+                    else 0
+                ),
+                standardized=results.get("standardized", False),
+            )
+
+            db.add(session)
+            db.flush()  # IDを取得するため
+            session_id = session.session_id
+
+            # タグを保存
+            if tags:
+                for tag in tags:
+                    if tag.strip():
+                        session_tag = SessionTag(
+                            session_id=session_id, tag_name=tag.strip()
+                        )
+                        db.add(session_tag)
+
+            # プロット画像を保存
+            if plot_base64:
+                visualization = VisualizationData(
+                    session_id=session_id,
+                    plot_image=plot_base64,
+                    plot_width=1600,
+                    plot_height=1200,
+                )
+                db.add(visualization)
+
+            db.commit()
+            return session_id
+
+        except Exception as e:
+            print(f"❌ 直接保存エラー: {str(e)}")
+            db.rollback()
+            return 0
+
+    async def get_session_detail(self, session_id: int, db: Session):
+        """PCAセッション詳細を取得"""
+        try:
+            print(f"📊 PCA セッション詳細取得開始: {session_id}")
+
+            # 基底クラスのメソッドが存在するかチェック
+            if hasattr(super(), "get_session_detail"):
+                try:
+                    base_detail = super().get_session_detail(db, session_id)
+                except Exception as e:
+                    print(f"⚠️ 基底クラスのget_session_detailエラー: {e}")
+                    base_detail = await self._get_session_detail_directly(
+                        db, session_id
+                    )
+            else:
+                print("⚠️ 基底クラスにget_session_detailメソッドがありません")
+                base_detail = await self._get_session_detail_directly(db, session_id)
+
+            return base_detail
+
+        except Exception as e:
+            print(f"❌ PCA セッション詳細取得エラー: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def _get_session_detail_directly(self, db: Session, session_id: int):
+        """PCAセッション詳細を直接取得"""
+        try:
+            from models import (
+                AnalysisSession,
+                VisualizationData,
+                CoordinatesData,
+                EigenvalueData,
+                AnalysisMetadata,
+            )
+
+            # セッション基本情報を取得
+            session = (
+                db.query(AnalysisSession)
+                .filter(AnalysisSession.id == session_id)
+                .first()
+            )
+
+            if not session:
+                return {
+                    "success": False,
+                    "error": f"セッション {session_id} が見つかりません",
+                }
+
+            # 可視化データを取得
+            visualization = (
+                db.query(VisualizationData)
+                .filter(VisualizationData.session_id == session_id)
+                .first()
+            )
+
+            # 座標データを取得
+            coordinates = (
+                db.query(CoordinatesData)
+                .filter(CoordinatesData.session_id == session_id)
+                .all()
+            )
+
+            # 主成分得点データ（observation）と主成分負荷量データ（variable）
+            component_scores = []
+            component_loadings = []
+            sample_names = []
+            feature_names = []
+
+            for coord in coordinates:
+                coord_data = {
+                    "name": coord.point_name,
+                    "point_name": coord.point_name,
+                    "dimension_1": (
+                        float(coord.dimension_1)
+                        if coord.dimension_1 is not None
+                        else 0.0
+                    ),
+                    "dimension_2": (
+                        float(coord.dimension_2)
+                        if coord.dimension_2 is not None
+                        else 0.0
+                    ),
+                    "dimension_3": (
+                        float(coord.dimension_3)
+                        if coord.dimension_3 is not None
+                        else 0.0
+                    ),
+                    "dimension_4": (
+                        float(coord.dimension_4)
+                        if coord.dimension_4 is not None
+                        else 0.0
+                    ),
+                    "pc_1": (
+                        float(coord.dimension_1)
+                        if coord.dimension_1 is not None
+                        else 0.0
+                    ),
+                    "pc_2": (
+                        float(coord.dimension_2)
+                        if coord.dimension_2 is not None
+                        else 0.0
+                    ),
+                    "pc_3": (
+                        float(coord.dimension_3)
+                        if coord.dimension_3 is not None
+                        else 0.0
+                    ),
+                }
+
+                if coord.point_type == "observation":
+                    coord_data["sample_name"] = coord.point_name
+                    coord_data["order_index"] = len(component_scores)
+                    component_scores.append(coord_data)
+                    sample_names.append(coord.point_name)
+
+                elif coord.point_type == "variable":
+                    coord_data["variable_name"] = coord.point_name
+                    coord_data["order_index"] = len(component_loadings)
+                    component_loadings.append(coord_data)
+                    feature_names.append(coord.point_name)
+
+            # 固有値データを取得
+            eigenvalue_data = (
+                db.query(EigenvalueData)
+                .filter(EigenvalueData.session_id == session_id)
+                .order_by(EigenvalueData.dimension_number)
+                .all()
+            )
+
+            # メタデータエントリを取得
+            metadata_entries = (
+                db.query(AnalysisMetadata)
+                .filter(AnalysisMetadata.session_id == session_id)
+                .all()
+            )
+
+            # レスポンス構造を構築
+            response_data = {
+                "success": True,
+                "data": {
+                    "session_info": {
+                        "session_id": session.id,
+                        "session_name": session.session_name,
+                        "description": getattr(session, "description", "") or "",
+                        "filename": session.original_filename,
+                        "row_count": getattr(
+                            session, "row_count", len(component_scores)
+                        )
+                        or len(component_scores),
+                        "column_count": getattr(
+                            session, "column_count", len(component_loadings)
+                        )
+                        or len(component_loadings),
+                        "dimensions_count": getattr(session, "dimensions_count", 2)
+                        or 2,
+                        "dimension_1_contribution": (
+                            float(getattr(session, "dimension_1_contribution", 0))
+                            if getattr(session, "dimension_1_contribution", None)
+                            else 0.0
+                        ),
+                        "dimension_2_contribution": (
+                            float(getattr(session, "dimension_2_contribution", 0))
+                            if getattr(session, "dimension_2_contribution", None)
+                            else 0.0
+                        ),
+                        "standardized": getattr(session, "standardized", True),
+                        "analysis_timestamp": (
+                            session.analysis_timestamp.isoformat()
+                            if hasattr(session, "analysis_timestamp")
+                            and session.analysis_timestamp
+                            else None
+                        ),
+                    },
+                    "metadata": {
+                        "filename": session.original_filename,
+                        "rows": getattr(session, "row_count", len(component_scores))
+                        or len(component_scores),
+                        "columns": getattr(
+                            session, "column_count", len(component_loadings)
+                        )
+                        or len(component_loadings),
+                        "sample_names": sample_names,
+                        "feature_names": feature_names,
+                    },
+                    "analysis_data": {
+                        "component_scores": component_scores,
+                        "component_loadings": component_loadings,
+                    },
+                    "coordinates_data": component_scores
+                    + component_loadings,  # 統合された座標データ
+                    "eigenvalue_data": [
+                        {
+                            "dimension_number": ev.dimension_number,
+                            "eigenvalue": (
+                                float(ev.eigenvalue) if ev.eigenvalue else 0.0
+                            ),
+                            "explained_inertia": (
+                                float(ev.explained_inertia)
+                                if ev.explained_inertia
+                                else 0.0
+                            ),
+                            "cumulative_inertia": (
+                                float(ev.cumulative_inertia)
+                                if ev.cumulative_inertia
+                                else 0.0
+                            ),
+                        }
+                        for ev in eigenvalue_data
+                    ],
+                    "metadata_entries": [
+                        {
+                            "metadata_type": meta.metadata_type,
+                            "metadata_content": meta.metadata_content,
+                        }
+                        for meta in metadata_entries
+                    ],
+                    "visualization": {
+                        "plot_image": (
+                            visualization.image_base64 if visualization else None
+                        ),
+                        "width": visualization.width if visualization else 1600,
+                        "height": visualization.height if visualization else 1200,
+                    },
+                },
+            }
+
+            print(f"✅ PCA セッション詳細取得完了")
+            return response_data
+
+        except Exception as e:
+            print(f"❌ PCA セッション詳細取得エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}

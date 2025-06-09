@@ -1,5 +1,5 @@
-// app/api/pca/download/[sessionId]/details/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+// src/app/api/pca/download/[sessionId]/details/route.ts
+import { NextRequest } from 'next/server';
 
 export async function GET(
   request: NextRequest,
@@ -8,38 +8,34 @@ export async function GET(
   try {
     const sessionId = params.sessionId;
     
-    const fastApiUrl = process.env.FASTAPI_URL || 'http://python-api:8000';
-    console.log(`🔗 Downloading PCA details for session ${sessionId} from:`, fastApiUrl);
+    const backendUrl = `${process.env.BACKEND_URL || 'http://localhost:8000'}/pca/download/${sessionId}/details`;
     
-    const response = await fetch(`${fastApiUrl}/api/pca/download/${sessionId}/details`);
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ FastAPI download error:', errorText);
-      return NextResponse.json(
-        { error: 'ダウンロードに失敗しました', details: errorText },
-        { status: response.status }
-      );
-    }
-
-    // CSVファイルとして返す
-    const csvContent = await response.text();
-    console.log(`✅ PCA details downloaded successfully for session ${sessionId}`);
-    
-    return new NextResponse(csvContent, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="pca_details_${sessionId}.csv"`,
-      },
+    const response = await fetch(backendUrl, {
+      method: 'GET',
     });
     
+    if (!response.ok) {
+      throw new Error(`Backend responded with status: ${response.status}`);
+    }
+    
+    const blob = await response.blob();
+    
+    // Content-Dispositionヘッダーを転送
+    const contentDisposition = response.headers.get('Content-Disposition') || 
+      `attachment; filename="pca_details_${sessionId}.csv"`;
+    
+    return new Response(blob, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': contentDisposition,
+      },
+    });
   } catch (error) {
-    console.error('❌ PCA download error:', error);
-    return NextResponse.json(
-      { error: 'ダウンロード中にエラーが発生しました' },
+    console.error('PCA details download API error:', error);
+    return Response.json(
+      { error: 'PCA詳細ダウンロードでエラーが発生しました' },
       { status: 500 }
     );
   }
 }
-

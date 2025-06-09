@@ -1,4 +1,4 @@
-// app/api/pca/analyze/route.ts
+// src/app/api/pca/analyze/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       const errorText = await response.text();
       console.error('❌ FastAPI error:', errorText);
       return NextResponse.json(
-        { success: false, error: '主成分分析に失敗しました', details: errorText },
+        { success: false, error: 'PCA分析に失敗しました', details: errorText },
         { status: response.status }
       );
     }
@@ -52,20 +52,21 @@ export async function POST(request: NextRequest) {
       
       if (result && typeof result === 'object') {
         console.log('📊 Result keys:', Object.keys(result));
+        console.log('📊 Session ID in result:', result.session_id);
       }
     } catch (parseError) {
       console.error('❌ JSON parse error:', parseError);
       console.error('📄 Failed to parse text:', responseText);
       
       // FastAPIが成功ログを出力しているので、成功として扱う一時的な回避策
-      if (responseText.includes('=== API処理完了 ===') || response.status === 200) {
-        console.log('🔄 Applying fallback: treating as successful analysis');
+      if (responseText.includes('=== PCA API処理完了 ===') || response.status === 200) {
+        console.log('🔄 Applying fallback: treating as successful PCA analysis');
         
         // 最低限の成功レスポンスを生成
         result = {
           success: true,
           session_id: Date.now(), // 一時的なセッションID
-          session_name: '主成分分析',
+          session_name: 'PCA分析',
           analysis_type: 'pca',
           message: '分析は完了しましたが、詳細結果の取得に問題があります。セッション履歴から結果を確認してください。'
         };
@@ -81,6 +82,7 @@ export async function POST(request: NextRequest) {
     }
     
     console.log('✅ PCA analysis completed successfully');
+    console.log('📤 Returning result with success:', result.success, 'session_id:', result.session_id);
     
     // FastAPIからの結果を確認し、successプロパティを追加
     if (result && typeof result === 'object' && result !== null) {
@@ -96,7 +98,6 @@ export async function POST(request: NextRequest) {
         console.log('➕ Added session_id to result:', result.session_id);
       }
       
-      console.log('📤 Returning result with success:', result.success);
       return NextResponse.json(result);
     } else {
       console.error('❌ Invalid result format:', result);

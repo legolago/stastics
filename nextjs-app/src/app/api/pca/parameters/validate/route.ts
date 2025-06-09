@@ -1,28 +1,31 @@
-// app/api/pca/parameters/validate/route.ts
-import { NextRequest, NextResponse } from 'next/server';
+// src/app/api/pca/parameters/validate/route.ts
+import { NextRequest } from 'next/server';
 
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const queryString = searchParams.toString();
     
-    const fastApiUrl = process.env.FASTAPI_URL || 'http://python-api:8000';
-    console.log('🔗 Validating PCA parameters:', fastApiUrl);
+    const backendUrl = `${process.env.BACKEND_URL || 'http://localhost:8000'}/pca/parameters/validate`;
+    const queryParams = new URLSearchParams();
     
-    const response = await fetch(`${fastApiUrl}/api/pca/parameters/validate?${queryString}`);
-
-    if (!response.ok) {
-      throw new Error(`FastAPI request failed: ${response.statusText}`);
-    }
-
-    const validation = await response.json();
-    console.log('✅ PCA parameters validated successfully');
-    return NextResponse.json(validation);
+    searchParams.forEach((value, key) => {
+      queryParams.append(key, value);
+    });
     
+    const response = await fetch(`${backendUrl}?${queryParams.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    const data = await response.json();
+    
+    return Response.json(data, { status: response.status });
   } catch (error) {
-    console.error('❌ Parameter validation error:', error);
-    return NextResponse.json(
-      { error: 'パラメータ検証に失敗しました' },
+    console.error('PCA parameters validate API error:', error);
+    return Response.json(
+      { error: 'PCAパラメータ検証でエラーが発生しました' },
       { status: 500 }
     );
   }

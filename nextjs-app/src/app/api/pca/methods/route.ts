@@ -1,25 +1,22 @@
-// app/api/pca/methods/route.ts
-import { NextResponse } from 'next/server';
-
+// src/app/api/pca/methods/route.ts
 export async function GET() {
   try {
-    const fastApiUrl = process.env.FASTAPI_URL || 'http://python-api:8000';
-    console.log('🔗 Getting PCA methods from:', fastApiUrl);
+    const backendUrl = `${process.env.BACKEND_URL || 'http://localhost:8000'}/pca/methods`;
     
-    const response = await fetch(`${fastApiUrl}/api/pca/methods`);
-
-    if (!response.ok) {
-      throw new Error(`FastAPI request failed: ${response.statusText}`);
-    }
-
-    const methods = await response.json();
-    console.log('✅ PCA methods retrieved successfully');
-    return NextResponse.json(methods);
+    const response = await fetch(backendUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
     
+    const data = await response.json();
+    
+    return Response.json(data, { status: response.status });
   } catch (error) {
-    console.error('❌ Get PCA methods error:', error);
-    return NextResponse.json(
-      { error: 'メソッド一覧の取得に失敗しました' },
+    console.error('PCA methods API error:', error);
+    return Response.json(
+      { error: 'PCA手法一覧取得でエラーが発生しました' },
       { status: 500 }
     );
   }
