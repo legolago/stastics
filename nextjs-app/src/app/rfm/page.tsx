@@ -157,25 +157,28 @@ export default function RFMAnalysisPage() {
         throw new Error(data.error || 'セッション取得に失敗しました');
       }
 
-      const rfmSessions = data.data.filter((session: any) => 
-        session.analysis_type === 'rfm'
-      );
+      const rfmSessions = data.data
+      .filter((session: any) => session.analysis_type === 'rfm')
+      .map((session: any) => ({
+        ...session,
+        tags: session.tags || [] // タグが無い場合は空配列を設定
+      }));
 
-      console.log('🔍 RFM分析セッション一覧:', {
-        totalSessions: data.data.length,
-        rfmSessions: rfmSessions.length,
-        rfmSessionIds: rfmSessions.map((s: any) => s.session_id)
-      });
+    console.log('🔍 RFM分析セッション一覧:', {
+      totalSessions: data.data.length,
+      rfmSessions: rfmSessions.length,
+      rfmSessionIds: rfmSessions.map((s: any) => s.session_id)
+    });
 
-      setSessions(rfmSessions);
+    setSessions(rfmSessions);
 
-    } catch (error) {
-      console.error('❌ セッション取得エラー:', error);
-      setError(error instanceof Error ? error.message : 'セッション取得中にエラーが発生しました');
-    } finally {
-      setSessionsLoading(false);
-    }
-  };
+  } catch (error) {
+    console.error('❌ セッション取得エラー:', error);
+    setError(error instanceof Error ? error.message : 'セッション取得中にエラーが発生しました');
+  } finally {
+    setSessionsLoading(false);
+  }
+};
 
   // セッション詳細を取得
   const fetchSessionDetail = async (sessionId: number) => {
@@ -744,16 +747,17 @@ export default function RFMAnalysisPage() {
                       )}
                       
                       <div className="flex flex-wrap gap-1 mb-2">
-                        {session.tags.map((tag, index) => (
-                          <span
-                            key={index}
-                            className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded"
-                          >
-                            {tag}
-                          </span>
-                        ))}
+                        {session.tags && Array.isArray(session.tags) ? (
+                          session.tags.map((tag, index) => (
+                            <span
+                              key={index}
+                              className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded"
+                            >
+                              {tag}
+                            </span>
+                          ))
+                        ) : null}
                       </div>
-                      
                       <div className="text-xs text-gray-500 space-y-1">
                         <p>分析日時: {formatDate(session.analysis_timestamp)}</p>
                         <p>データサイズ: {session.row_count} 行</p>

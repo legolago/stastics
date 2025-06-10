@@ -158,11 +158,12 @@ export default function StatisticsHomePage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
           <div className="text-center">
             <h1 className="text-4xl font-bold text-gray-900 mb-4">
-              統計分析プラットフォーム
+              AXIS統計分析プラットフォーム
             </h1>
             <p className="text-xl text-gray-600 max-w-3xl mx-auto">
               多様な統計分析手法を簡単に実行できるWebアプリケーション。
-              CSVデータをアップロードして、専門的な分析を直感的に行えます。
+              <br></br>
+              データをアップロードして、専門的な分析を直感的に行えます。
             </p>
           </div>
         </div>

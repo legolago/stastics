@@ -11,6 +11,9 @@ import os
 from models import get_db
 from analysis.rfm import RFMAnalysisAnalyzer
 
+from models import AnalysisSession, AnalysisMetadata, CoordinatesData, get_db
+
+
 router = APIRouter(prefix="/rfm", tags=["rfm"])
 
 
@@ -55,7 +58,9 @@ async def analyze_rfm(
                 continue
 
         if csv_text is None:
-            raise HTTPException(status_code=400, detail="対応するエンコーディングが見つかりません")
+            raise HTTPException(
+                status_code=400, detail="対応するエンコーディングが見つかりません"
+            )
 
         print(f"CSVテキスト（最初の500文字）:\n{csv_text[:500]}")
 
@@ -117,6 +122,7 @@ async def analyze_rfm(
         print(f"=== RFM分析API処理エラー ===")
         print(f"エラー: {str(e)}")
         import traceback
+
         print(f"詳細:\n{traceback.format_exc()}")
 
         raise HTTPException(
@@ -274,7 +280,7 @@ async def get_interpretation_guide():
 async def get_rfm_session_detail(
     session_id: int,
     db: Session = Depends(get_db),
-):
+) -> dict:
     """RFM分析セッション詳細を取得"""
     try:
         print(f"📊 RFM分析セッション詳細取得開始: {session_id}")
@@ -302,6 +308,7 @@ async def get_rfm_session_detail(
     except Exception as e:
         print(f"❌ RFM分析セッション詳細取得エラー: {str(e)}")
         import traceback
+
         print(f"詳細:\n{traceback.format_exc()}")
 
         raise HTTPException(
@@ -476,6 +483,7 @@ async def download_rfm_details(session_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"詳細CSV出力エラー: {str(e)}")
         import traceback
+
         traceback.print_exc()
         raise HTTPException(
             status_code=500, detail=f"詳細CSV出力中にエラーが発生しました: {str(e)}"
@@ -593,6 +601,7 @@ async def download_customers_csv(session_id: int, db: Session = Depends(get_db))
     except Exception as e:
         print(f"❌ 顧客データダウンロードエラー: {str(e)}")
         import traceback
+
         print(f"詳細:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -716,8 +725,98 @@ async def download_rfm_segments(session_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"❌ セグメント統計CSV出力エラー: {str(e)}")
         import traceback
+
         print(f"詳細:\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"セグメント統計CSV出力中にエラーが発生しました: {str(e)}",
+        )
+
+
+# get_rfm_session_detail関数の修正
+@router.get("/sessions/{session_id}")
+async def get_rfm_session_detail(
+    session_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """RFM分析セッション詳細を取得"""
+    try:
+        print(f"📊 RFM分析セッション詳細取得開始: {session_id}")
+
+        # セッションの存在確認
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
+
+        if not session:
+            print(f"⚠️ セッション {session_id} が見つかりません")
+            raise HTTPException(
+                status_code=404, detail=f"セッション {session_id} が存在しません"
+            )
+
+        if session.analysis_type != "rfm":
+            print(
+                f"⚠️ セッション {session_id} はRFM分析ではありません（type: {session.analysis_type}）"
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"セッション {session_id} はRFM分析のセッションではありません",
+            )
+
+        # メタデータの取得
+        metadata = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
+
+        # 顧客データの取得
+        customers = (
+            db.query(CoordinatesData)
+            .filter(
+                CoordinatesData.session_id == session_id,
+                CoordinatesData.point_type == "customer",
+            )
+            .all()
+        )
+
+        # レスポンスデータの構築
+        session_detail = {
+            "success": True,
+            "session": {
+                "id": session.id,
+                "name": session.session_name,
+                "description": session.description,
+                "analysis_type": session.analysis_type,
+                "created_at": session.analysis_timestamp.isoformat(),
+                "tags": session.tags,
+                "file_name": session.original_filename,
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+            },
+            "customer_count": len(customers),
+            "metadata": {
+                meta.metadata_type: meta.metadata_content for meta in metadata
+            },
+            "download_urls": {
+                "details": f"/api/rfm/download/{session_id}/details",
+                "customers": f"/api/rfm/download/{session_id}/customers",
+                "segments": f"/api/rfm/download/{session_id}/segments",
+            },
+        }
+
+        print(f"✅ セッション {session_id} の詳細データを取得完了")
+        return JSONResponse(content=session_detail)
+
+    except HTTPException as he:
+        print(f"❌ HTTPエラー: {str(he)}")
+        raise he
+    except Exception as e:
+        print(f"❌ RFM分析セッション詳細取得エラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"セッション詳細の取得中にエラーが発生しました: {str(e)}",
         )

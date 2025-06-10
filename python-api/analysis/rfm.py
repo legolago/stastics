@@ -59,6 +59,83 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             print(f"トレースバック:\n{traceback.format_exc()}")
             raise
 
+    async def get_session_detail(self, session_id: int, db: Session) -> dict:
+        """RFM分析セッションの詳細情報を取得"""
+        try:
+            print(f"🔍 セッション {session_id} の詳細データを取得中...")
+
+            # セッション情報の取得
+            session = (
+                db.query(AnalysisSession)
+                .filter(AnalysisSession.id == session_id)
+                .first()
+            )
+
+            if not session:
+                raise ValueError(f"セッション {session_id} が見つかりません")
+
+            # メタデータの取得
+            metadata = (
+                db.query(AnalysisMetadata)
+                .filter(
+                    AnalysisMetadata.session_id == session_id,
+                )
+                .all()
+            )
+
+            # メタデータの解析
+            stats_data = None
+            coefficients_data = None
+            for meta in metadata:
+                if meta.metadata_type == "rfm_statistics":
+                    stats_data = meta.metadata_content
+                elif meta.metadata_type == "rfm_coefficients":
+                    coefficients_data = meta.metadata_content
+
+            # セッション詳細の構築
+            session_detail = {
+                "session_id": session.id,
+                "session_name": session.session_name,
+                "analysis_type": "rfm",
+                "filename": session.original_filename,
+                "description": session.description,
+                "analysis_date": session.analysis_timestamp.isoformat(),
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+                "total_customers": (
+                    stats_data.get("total_customers") if stats_data else 0
+                ),
+                "rfm_divisions": stats_data.get("rfm_divisions") if stats_data else 3,
+                "customer_data": (
+                    stats_data.get("customer_data", []) if stats_data else []
+                ),
+                "segment_counts": (
+                    stats_data.get("segment_counts", {}) if stats_data else {}
+                ),
+                "rfm_statistics": {
+                    "rfm_stats": stats_data.get("rfm_stats", {}) if stats_data else {},
+                    "segment_stats": (
+                        stats_data.get("segment_stats", {}) if stats_data else {}
+                    ),
+                    "segment_definitions": (
+                        stats_data.get("segment_definitions", {}) if stats_data else {}
+                    ),
+                },
+                "plot_image": stats_data.get("plot_image", "") if stats_data else "",
+                "download_urls": {
+                    "customers": f"/api/rfm/download/{session_id}/customers",
+                    "segments": f"/api/rfm/download/{session_id}/segments",
+                    "details": f"/api/rfm/download/{session_id}/details",
+                },
+            }
+
+            print(f"✅ セッション {session_id} の詳細データを取得完了")
+            return session_detail
+
+        except Exception as e:
+            print(f"❌ セッション詳細取得エラー: {str(e)}")
+            raise
+
     def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
         """RFM分析の可視化を作成"""
         try:
