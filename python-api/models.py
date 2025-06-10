@@ -116,8 +116,12 @@ class CoordinatesData(Base):
     # 🆕 拡張されたpoint_type: 'row', 'column', 'observation', 'variable', 'factor', 'customer'
     point_type = Column(String(20), nullable=False)
     point_name = Column(String(255), nullable=False)
-    dimension_1 = Column(DECIMAL(12, 8))
-    dimension_2 = Column(DECIMAL(12, 8))
+    
+    dimension_1 = Column(DECIMAL(10, 2))
+    dimension_2 = Column(DECIMAL(10, 2))
+    dimension_3 = Column(DECIMAL(15, 2))  # Monetary: 最大金額（15桁で十分）
+    dimension_4 = Column(DECIMAL(10, 2))  # RFMスコア: 最大値9
+    
     contribution_dim1 = Column(DECIMAL(8, 6))
     contribution_dim2 = Column(DECIMAL(8, 6))
     quality_representation = Column(DECIMAL(8, 6))
@@ -125,6 +129,9 @@ class CoordinatesData(Base):
     # 追加の次元
     dimension_3 = Column(DECIMAL(12, 8))
     dimension_4 = Column(DECIMAL(12, 8))
+
+    # 🆕 RFM分析などのための拡張メタデータフィールドを追加
+    metadata_json = Column(JSONB, nullable=True)
 
     # 🆕 一意制約の名前を明示的に指定
     __table_args__ = (
