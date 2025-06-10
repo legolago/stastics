@@ -14,122 +14,6 @@ from analysis.rfm import RFMAnalysisAnalyzer
 router = APIRouter(prefix="/rfm", tags=["rfm"])
 
 
-@router.post("/analyze-fixed")
-async def analyze_rfm_fixed(
-    file: UploadFile = File(...),
-    session_name: str = Query(...),
-    customer_id_col: str = Query("id"),
-    date_col: str = Query("date"),
-    amount_col: str = Query("price"),
-    rfm_divisions: int = Query(3),
-):
-    """RFM分析（完全修正版）"""
-    import os
-    import json
-    import io
-    from datetime import datetime
-
-    try:
-        print(f"=== 完全修正版RFM分析開始 ===")
-
-        # CSV読み込み（エンコーディング自動判定）
-        contents = await file.read()
-        csv_text = None
-        encodings = ["utf-8", "shift_jis", "cp932", "euc-jp"]
-
-        for encoding in encodings:
-            try:
-                csv_text = contents.decode(encoding)
-                print(f"✅ エンコーディング: {encoding}")
-                break
-            except UnicodeDecodeError:
-                continue
-
-        if csv_text is None:
-            raise ValueError("対応するエンコーディングが見つかりません")
-
-        # DataFrameに変換
-        df = pd.read_csv(io.StringIO(csv_text))
-        print(f"データ: {df.shape}")
-
-        # RFM分析実行
-        from analysis.rfm import RFMAnalysisAnalyzer
-
-        analyzer = RFMAnalysisAnalyzer()
-
-        results = analyzer.analyze(
-            df=df,
-            customer_id_col=customer_id_col,
-            date_col=date_col,
-            amount_col=amount_col,
-            rfm_divisions=rfm_divisions,
-        )
-
-        # プロット生成
-        plot_base64 = analyzer.create_plot(results, df)
-
-        # 保存ディレクトリ作成
-        save_dir = "/tmp/rfm_results"
-        os.makedirs(save_dir, exist_ok=True)
-
-        # CSVファイル生成（重要：ここでエラーが起きていた）
-        customer_csv_file = f"{save_dir}/{session_name}_customers.csv"
-
-        # CSVヘッダーとデータの準備
-        csv_data = []
-        csv_data.append(
-            "customer_id,recency,frequency,monetary,rfm_score,r_score,f_score,m_score,segment"
-        )
-
-        for customer in results["customer_rfm_data"]:
-            row = f"{customer['customer_id']},{customer['recency']},{customer['frequency']},{customer['monetary']},{customer['rfm_score']},{customer['r_score']},{customer['f_score']},{customer['m_score']},{customer['segment']}"
-            csv_data.append(row)
-
-        # CSVファイル書き込み
-        with open(customer_csv_file, "w", encoding="utf-8-sig", newline="") as f:
-            f.write("\n".join(csv_data))
-
-        print(f"✅ CSVファイル保存: {customer_csv_file}")
-        print(f"✅ 顧客データ件数: {len(results['customer_rfm_data'])}")
-
-        # JSONファイルも保存
-        result_data = {
-            "session_name": session_name,
-            "analysis_type": "rfm",
-            "timestamp": datetime.now().isoformat(),
-            "total_customers": results["total_customers"],
-            "analysis_date": results["analysis_date"],
-            "customer_data": results["customer_rfm_data"],
-            "segment_counts": results["segment_counts"],
-            "plot_image": plot_base64,
-        }
-
-        result_file = f"{save_dir}/{session_name}_complete.json"
-        with open(result_file, "w", encoding="utf-8") as f:
-            json.dump(result_data, f, ensure_ascii=False, indent=2)
-
-        return {
-            "success": True,
-            "session_name": session_name,
-            "total_customers": results["total_customers"],
-            "analysis_date": results["analysis_date"],
-            "customer_data": results["customer_rfm_data"][:50],  # 最初の50件
-            "segment_counts": results["segment_counts"],
-            "files": {"csv": customer_csv_file, "json": result_file},
-            "download_urls": {
-                "csv": f"/api/rfm/download-file/{session_name}",
-                "json": f"/api/rfm/download-json/{session_name}",
-            },
-        }
-
-    except Exception as e:
-        print(f"❌ 完全修正版エラー: {str(e)}")
-        import traceback
-
-        print(f"詳細:\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.post("/analyze")
 async def analyze_rfm(
     file: UploadFile = File(...),
@@ -157,15 +41,21 @@ async def analyze_rfm(
         if not file.filename.endswith(".csv"):
             raise HTTPException(status_code=400, detail="CSVファイルのみ対応しています")
 
-        # CSVファイル読み込み
+        # CSVファイル読み込み（エンコーディング自動判定）
         contents = await file.read()
-        try:
-            csv_text = contents.decode("utf-8")
-        except UnicodeDecodeError:
+        csv_text = None
+        encodings = ["utf-8", "shift_jis", "cp932", "euc-jp", "iso-8859-1"]
+
+        for encoding in encodings:
             try:
-                csv_text = contents.decode("shift_jis")
+                csv_text = contents.decode(encoding)
+                print(f"✅ エンコーディング: {encoding}")
+                break
             except UnicodeDecodeError:
-                csv_text = contents.decode("iso-8859-1")
+                continue
+
+        if csv_text is None:
+            raise HTTPException(status_code=400, detail="対応するエンコーディングが見つかりません")
 
         print(f"CSVテキスト（最初の500文字）:\n{csv_text[:500]}")
 
@@ -227,7 +117,6 @@ async def analyze_rfm(
         print(f"=== RFM分析API処理エラー ===")
         print(f"エラー: {str(e)}")
         import traceback
-
         print(f"詳細:\n{traceback.format_exc()}")
 
         raise HTTPException(
@@ -394,7 +283,7 @@ async def get_rfm_session_detail(
         analyzer = RFMAnalysisAnalyzer()
 
         # セッション詳細を取得
-        session_detail = await analyzer.get_session_detail_async(session_id, db)
+        session_detail = await analyzer.get_session_detail(session_id, db)
 
         print(f"🔍 取得されたセッション詳細: {session_detail.get('success', False)}")
 
@@ -413,7 +302,6 @@ async def get_rfm_session_detail(
     except Exception as e:
         print(f"❌ RFM分析セッション詳細取得エラー: {str(e)}")
         import traceback
-
         print(f"詳細:\n{traceback.format_exc()}")
 
         raise HTTPException(
@@ -588,7 +476,6 @@ async def download_rfm_details(session_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"詳細CSV出力エラー: {str(e)}")
         import traceback
-
         traceback.print_exc()
         raise HTTPException(
             status_code=500, detail=f"詳細CSV出力中にエラーが発生しました: {str(e)}"
@@ -597,7 +484,7 @@ async def download_rfm_details(session_id: int, db: Session = Depends(get_db)):
 
 @router.get("/download/{session_id}/customers")
 async def download_customers_csv(session_id: int, db: Session = Depends(get_db)):
-    """データベースからRFM顧客データをCSVでダウンロード（metadata修正版）"""
+    """データベースからRFM顧客データをCSVでダウンロード"""
     try:
         from fastapi import Response
         from sqlalchemy import text
@@ -605,7 +492,7 @@ async def download_customers_csv(session_id: int, db: Session = Depends(get_db))
         import csv
         import json
 
-        print(f"=== データベース版CSVダウンロード: session_id={session_id} ===")
+        print(f"=== 顧客データCSVダウンロード: session_id={session_id} ===")
 
         # データベースから顧客データを取得
         query = text(
@@ -657,18 +544,14 @@ async def download_customers_csv(session_id: int, db: Session = Depends(get_db))
         successful_rows = 0
         for row in rows:
             try:
-                # metadata_jsonの処理を修正
+                # metadata_jsonの処理
                 if row.metadata_json:
                     if isinstance(row.metadata_json, dict):
-                        # 既にdict形式の場合（よくあるケース）
                         metadata = row.metadata_json
                     elif isinstance(row.metadata_json, str):
-                        # 文字列の場合のみJSONパース
                         metadata = json.loads(row.metadata_json)
                     else:
-                        # その他の場合は空のdict
                         metadata = {}
-                        print(f"不明なmetadata形式: {type(row.metadata_json)}")
                 else:
                     metadata = {}
 
@@ -690,8 +573,6 @@ async def download_customers_csv(session_id: int, db: Session = Depends(get_db))
 
             except Exception as e:
                 print(f"行処理エラー（customer_id: {row.customer_id}）: {e}")
-                print(f"metadata_json型: {type(row.metadata_json)}")
-                print(f"metadata_json内容: {row.metadata_json}")
                 continue
 
         csv_content = output.getvalue()
@@ -710,95 +591,15 @@ async def download_customers_csv(session_id: int, db: Session = Depends(get_db))
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ データベース版ダウンロードエラー: {str(e)}")
+        print(f"❌ 顧客データダウンロードエラー: {str(e)}")
         import traceback
-
         print(f"詳細:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 簡易版：JSONレスポンスとしてデータベースの顧客データを取得
-@router.get("/session/{session_id}/customers-json")
-async def get_customers_json(session_id: int, db: Session = Depends(get_db)):
-    """データベースから顧客データをJSONで取得（metadata修正版）"""
-    try:
-        from sqlalchemy import text
-        import json
-
-        print(f"=== 顧客データJSON取得: session_id={session_id} ===")
-
-        query = text(
-            """
-            SELECT 
-                point_name as customer_id,
-                dimension_1 as recency,
-                dimension_2 as frequency, 
-                dimension_3 as monetary,
-                dimension_4 as rfm_score,
-                metadata_json
-            FROM coordinates_data 
-            WHERE session_id = :session_id AND point_type = 'customer'
-            ORDER BY point_name::integer
-            LIMIT 100
-        """
-        )
-
-        result = db.execute(query, {"session_id": session_id})
-        rows = result.fetchall()
-
-        if not rows:
-            return {
-                "error": f"セッション {session_id} の顧客データが見つかりません",
-                "customers": [],
-            }
-
-        customers = []
-        for row in rows:
-            try:
-                # metadata_jsonの適切な処理
-                if row.metadata_json:
-                    if isinstance(row.metadata_json, dict):
-                        metadata = row.metadata_json
-                    elif isinstance(row.metadata_json, str):
-                        metadata = json.loads(row.metadata_json)
-                    else:
-                        metadata = {}
-                else:
-                    metadata = {}
-
-                customers.append(
-                    {
-                        "customer_id": row.customer_id,
-                        "recency": round(float(row.recency), 2),
-                        "frequency": round(float(row.frequency), 2),
-                        "monetary": round(float(row.monetary), 2),
-                        "rfm_score": round(float(row.rfm_score), 2),
-                        "r_score": metadata.get("r_score", ""),
-                        "f_score": metadata.get("f_score", ""),
-                        "m_score": metadata.get("m_score", ""),
-                        "segment": metadata.get("segment", ""),
-                    }
-                )
-            except Exception as e:
-                print(f"顧客データ処理エラー（ID: {row.customer_id}）: {e}")
-                continue
-
-        print(f"顧客データ取得成功: {len(customers)} 件")
-
-        return {
-            "session_id": session_id,
-            "total_customers": len(customers),
-            "customers": customers,
-        }
-
-    except Exception as e:
-        print(f"❌ 顧客JSON取得エラー: {str(e)}")
-        return {"error": str(e), "customers": []}
-
-
 @router.get("/download/{session_id}/segments")
 async def download_rfm_segments(session_id: int, db: Session = Depends(get_db)):
-    """セグメント別統計をCSV形式でダウンロード（改善版）"""
+    """セグメント別統計をCSV形式でダウンロード"""
     try:
         from models import AnalysisSession, CoordinatesData
         import pandas as pd
@@ -915,173 +716,8 @@ async def download_rfm_segments(session_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"❌ セグメント統計CSV出力エラー: {str(e)}")
         import traceback
-
         print(f"詳細:\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"セグメント統計CSV出力中にエラーが発生しました: {str(e)}",
         )
-
-
-@router.get("/debug/session/{session_id}/data")
-async def debug_session_coordinates(session_id: int, db: Session = Depends(get_db)):
-    """セッションの座標データをデバッグ用に表示"""
-    try:
-        from models import CoordinatesData
-
-        coordinates = (
-            db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .limit(10)
-            .all()
-        )  # 最初の10件のみ
-
-        result = []
-        for coord in coordinates:
-            result.append(
-                {
-                    "point_name": coord.point_name,
-                    "point_type": coord.point_type,
-                    "dimensions": [
-                        coord.dimension_1,
-                        coord.dimension_2,
-                        coord.dimension_3,
-                        coord.dimension_4,
-                    ],
-                    "metadata": coord.metadata_json,
-                }
-            )
-
-        return {
-            "session_id": session_id,
-            "total_count": db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .count(),
-            "customer_count": db.query(CoordinatesData)
-            .filter(
-                CoordinatesData.session_id == session_id,
-                CoordinatesData.point_type == "customer",
-            )
-            .count(),
-            "sample_data": result,
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# routers/rfm.py に追加するマイグレーションエンドポイント
-
-
-# デバッグ用：metadata_jsonの内容を詳しく調査
-@router.get("/debug/session/{session_id}/metadata-sample")
-async def debug_metadata_sample(session_id: int, db: Session = Depends(get_db)):
-    """metadata_jsonの内容をサンプル調査"""
-    try:
-        from sqlalchemy import text
-
-        query = text(
-            """
-            SELECT 
-                point_name as customer_id,
-                metadata_json
-            FROM coordinates_data 
-            WHERE session_id = :session_id AND point_type = 'customer'
-            ORDER BY point_name::integer
-            LIMIT 5
-        """
-        )
-
-        result = db.execute(query, {"session_id": session_id})
-        rows = result.fetchall()
-
-        samples = []
-        for row in rows:
-            samples.append(
-                {
-                    "customer_id": row.customer_id,
-                    "metadata_type": str(type(row.metadata_json)),
-                    "metadata_content": str(row.metadata_json)[:200],  # 最初の200文字
-                    "is_dict": isinstance(row.metadata_json, dict),
-                    "is_string": isinstance(row.metadata_json, str),
-                }
-            )
-
-        return {"session_id": session_id, "samples": samples}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
-# 簡易版：基本データのみでCSVを生成
-@router.get("/download/{session_id}/customers-simple")
-async def download_customers_simple_csv(session_id: int, db: Session = Depends(get_db)):
-    """シンプル版CSVダウンロード（metadataなし）"""
-    try:
-        from fastapi import Response
-        from sqlalchemy import text
-        import io
-        import csv
-
-        print(f"=== シンプル版CSVダウンロード: session_id={session_id} ===")
-
-        query = text(
-            """
-            SELECT 
-                point_name as customer_id,
-                dimension_1 as recency,
-                dimension_2 as frequency, 
-                dimension_3 as monetary,
-                dimension_4 as rfm_score
-            FROM coordinates_data 
-            WHERE session_id = :session_id AND point_type = 'customer'
-            ORDER BY point_name::integer
-        """
-        )
-
-        result = db.execute(query, {"session_id": session_id})
-        rows = result.fetchall()
-
-        if not rows:
-            raise HTTPException(
-                status_code=404,
-                detail=f"セッション {session_id} の顧客データが見つかりません",
-            )
-
-        # CSV形式に変換
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        # シンプルなヘッダー
-        writer.writerow(
-            ["customer_id", "recency", "frequency", "monetary", "rfm_score"]
-        )
-
-        # データ行
-        for row in rows:
-            writer.writerow(
-                [
-                    row.customer_id,
-                    round(float(row.recency), 2),
-                    round(float(row.frequency), 2),
-                    round(float(row.monetary), 2),
-                    round(float(row.rfm_score), 2),
-                ]
-            )
-
-        csv_content = output.getvalue()
-        output.close()
-
-        print(f"シンプルCSV生成完了: {len(csv_content)} 文字, {len(rows)} 行")
-
-        return Response(
-            content=csv_content.encode("utf-8-sig"),
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "Content-Disposition": f'attachment; filename="rfm_customers_simple_{session_id}.csv"'
-            },
-        )
-
-    except Exception as e:
-        print(f"❌ シンプルCSVエラー: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))

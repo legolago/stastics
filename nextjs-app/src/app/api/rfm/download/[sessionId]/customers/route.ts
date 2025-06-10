@@ -1,4 +1,4 @@
-// 📁 app/api/rfm/download/[sessionId]/customers/route.ts (修正版)
+// 📁 app/api/rfm/download/[sessionId]/customers/route.ts (改良版)
 import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(
@@ -13,10 +13,19 @@ export async function GET(
     // 入力値検証
     if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
       console.error('❌ 無効なsessionId:', sessionId);
-      return NextResponse.json(
-        { error: '有効なセッションIDが必要です' },
-        { status: 400 }
-      );
+      return NextResponse.json({
+        error: '有効なセッションIDが必要です',
+        session_id: sessionId
+      }, { status: 400 });
+    }
+
+    const sessionIdNum = parseInt(sessionId, 10);
+    if (isNaN(sessionIdNum)) {
+      console.error('❌ sessionIdが数値ではありません:', sessionId);
+      return NextResponse.json({
+        error: 'セッションIDは数値である必要があります',
+        session_id: sessionId
+      }, { status: 400 });
     }
 
     const fastApiUrl = process.env.FASTAPI_URL || 'http://python-api:8000';
@@ -29,7 +38,6 @@ export async function GET(
       headers: {
         'Accept': 'text/csv',
       },
-      // タイムアウト設定
       signal: AbortSignal.timeout(30000), // 30秒
     });
 
@@ -49,11 +57,9 @@ export async function GET(
         errorText: errorText.substring(0, 500)
       });
       
-      // エラーレスポンスをJSONとして解析
       let errorData;
       try {
         errorData = JSON.parse(errorText);
-        console.error('❌ パースされたエラー:', errorData);
       } catch {
         errorData = { 
           detail: errorText || `HTTP ${response.status}: ${response.statusText}`,
@@ -61,15 +67,12 @@ export async function GET(
         };
       }
       
-      return NextResponse.json(
-        { 
-          error: 'FastAPIでエラーが発生しました', 
-          details: errorData,
-          fastapi_status: response.status,
-          session_id: sessionId
-        },
-        { status: response.status >= 500 ? 500 : response.status }
-      );
+      return NextResponse.json({
+        error: 'FastAPIでエラーが発生しました', 
+        details: errorData,
+        fastapi_status: response.status,
+        session_id: sessionId
+      }, { status: response.status >= 500 ? 500 : response.status });
     }
 
     // CSVデータを取得
@@ -79,15 +82,15 @@ export async function GET(
     // CSVが空でないことを確認
     if (!csvContent || csvContent.trim() === '') {
       console.error('❌ 空のCSVデータ');
-      return NextResponse.json(
-        { error: 'CSVデータが空です', session_id: sessionId },
-        { status: 500 }
-      );
+      return NextResponse.json({
+        error: 'CSVデータが空です',
+        session_id: sessionId
+      }, { status: 500 });
     }
 
-    // CSVの最初の数行をログ出力（デバッグ用）
-    const firstLines = csvContent.split('\n').slice(0, 3).join('\n');
-    console.log(`📄 CSV内容（最初の3行）:\n${firstLines}`);
+    // CSVの行数をカウント（ヘッダー含む）
+    const lines = csvContent.split('\n').filter(line => line.trim() !== '');
+    console.log(`📊 CSV行数: ${lines.length}行 (ヘッダー含む)`);
 
     // レスポンスヘッダーを設定してCSVファイルとして返す
     const filename = `rfm_customers_${sessionId}.csv`;
@@ -99,6 +102,7 @@ export async function GET(
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Cache-Control': 'no-cache',
         'Content-Length': csvContent.length.toString(),
+        'X-CSV-Rows': lines.length.toString(),
       },
     });
     
@@ -107,18 +111,15 @@ export async function GET(
     
     // タイムアウトエラーの特別処理
     if (error instanceof Error && error.name === 'AbortError') {
-      return NextResponse.json(
-        { error: 'リクエストがタイムアウトしました' },
-        { status: 504 }
-      );
+      return NextResponse.json({
+        error: 'リクエストがタイムアウトしました',
+        details: 'Python APIが応答していません'
+      }, { status: 504 });
     }
     
-    return NextResponse.json(
-      { 
-        error: '顧客データのダウンロード中にエラーが発生しました',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      error: '顧客データのダウンロード中にエラーが発生しました',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
   }
 }
