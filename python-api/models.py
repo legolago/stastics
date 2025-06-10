@@ -68,6 +68,10 @@ class AnalysisSession(Base):
     # 分析設定
     analysis_parameters = Column(JSONB)
 
+    # RFM分析固有のフィールドを追加（既存のフィールドの後に）
+    total_customers = Column(Integer, nullable=True)  # 総顧客数
+    analysis_period_days = Column(Integer, nullable=True)  # 分析期間（日数）
+
     created_at = Column(TIMESTAMP, default=datetime.utcnow)
     updated_at = Column(TIMESTAMP, default=datetime.utcnow)
 
@@ -109,7 +113,7 @@ class CoordinatesData(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("analysis_sessions.id"), nullable=False)
-    # 🆕 拡張されたpoint_type: 'row', 'column', 'observation', 'variable', 'factor'
+    # 🆕 拡張されたpoint_type: 'row', 'column', 'observation', 'variable', 'factor', 'customer'
     point_type = Column(String(20), nullable=False)
     point_name = Column(String(255), nullable=False)
     dimension_1 = Column(DECIMAL(12, 8))
@@ -265,7 +269,8 @@ class AnalysisTypes:
     PCA = "pca"
     FACTOR = "factor"
     CLUSTER = "cluster"
-    REGRESSION = "regression"  # 🆕 追加
+    REGRESSION = "regression"
+    RFM = "rfm"  # 🆕 追加
 
     @classmethod
     def all(cls):
@@ -316,6 +321,11 @@ class MetadataTypes:
     REGRESSION_PREDICTIONS = "regression_predictions"
     REGRESSION_RESIDUALS = "regression_residuals"
 
+    # RFM分析用を追加
+    RFM_STATISTICS = "rfm_statistics"
+    RFM_SEGMENTS = "rfm_segments"
+    RFM_CUSTOMER_DATA = "rfm_customer_data"
+
     @classmethod
     def get_types_for_analysis(cls, analysis_type: str):
         """分析手法に対応するメタデータタイプを取得"""
@@ -341,5 +351,72 @@ class MetadataTypes:
                 cls.REGRESSION_PREDICTIONS,
                 cls.REGRESSION_RESIDUALS,
             ],
+            # RFM分析用を追加
+            AnalysisTypes.RFM: [
+                cls.RFM_STATISTICS,
+                cls.RFM_SEGMENTS,
+                cls.RFM_CUSTOMER_DATA,
+            ],
         }
         return type_mapping.get(analysis_type, [])
+
+    def get_rfm_customer_segments(db, session_id: int):
+        """RFM分析のセッションから顧客セグメント情報を取得"""
+        from sqlalchemy import func
+
+        # 顧客データを取得
+        customers = (
+            db.query(CoordinatesData)
+            .filter(
+                CoordinatesData.session_id == session_id,
+                CoordinatesData.point_type == "customer",
+            )
+            .all()
+        )
+
+        # セグメント別集計
+        segment_summary = {}
+        for customer in customers:
+            if customer.metadata_json and "segment" in customer.metadata_json:
+                segment = customer.metadata_json["segment"]
+                if segment not in segment_summary:
+                    segment_summary[segment] = {
+                        "count": 0,
+                        "avg_recency": 0,
+                        "avg_frequency": 0,
+                        "avg_monetary": 0,
+                        "total_recency": 0,
+                        "total_frequency": 0,
+                        "total_monetary": 0,
+                    }
+
+                segment_summary[segment]["count"] += 1
+                segment_summary[segment]["total_recency"] += customer.dimension_1 or 0
+                segment_summary[segment]["total_frequency"] += customer.dimension_2 or 0
+                segment_summary[segment]["total_monetary"] += customer.dimension_3 or 0
+
+        # 平均値を計算
+        for segment, data in segment_summary.items():
+            if data["count"] > 0:
+                data["avg_recency"] = data["total_recency"] / data["count"]
+                data["avg_frequency"] = data["total_frequency"] / data["count"]
+                data["avg_monetary"] = data["total_monetary"] / data["count"]
+
+        return segment_summary
+
+    def get_rfm_statistics(db, session_id: int):
+        """RFM分析の統計情報を取得"""
+        # メタデータから統計情報を取得
+        metadata = (
+            db.query(AnalysisMetadata)
+            .filter(
+                AnalysisMetadata.session_id == session_id,
+                AnalysisMetadata.metadata_type == MetadataTypes.RFM_STATISTICS,
+            )
+            .first()
+        )
+
+        if metadata:
+            return metadata.metadata_content
+
+        return None
