@@ -77,7 +77,7 @@ export default function StatisticsHomePage() {
       id: 'regression',
       name: '回帰分析',
       description: '変数間の関係性をモデル化し、予測や要因分析を行います',
-      status: 'disabled',
+      status: 'available',
       path: '/available',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -85,6 +85,27 @@ export default function StatisticsHomePage() {
         </svg>
       ),
       features: ['線形回帰', '重回帰', '残差分析', '予測区間']
+    },
+    {
+      id: 'rfm',
+      name: 'RFM分析',
+      description: '顧客をRecency（最新購入日）、Frequency（購入頻度）、Monetary（購入金額）で分析し、顧客セグメンテーションを行います',
+      status: 'available',
+      path: '/rfm',
+      icon: (
+        <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="5" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="10" y="3" width="5" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="17" y="3" width="4" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="3" y="10" width="5" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="10" y="10" width="5" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="17" y="10" width="4" height="5" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="3" y="17" width="5" height="4" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="10" y="17" width="5" height="4" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+          <rect x="17" y="17" width="4" height="4" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
+        </svg>
+      ),
+      features: ['顧客分析', 'マーケティング予測']
     },
     {
       id: 'timeseries',

@@ -43,6 +43,14 @@ const analysisRoutes = [
     description: 'データのグループ化と分類',
     icon: '🔍',
     status: 'available'
+  },
+  {
+    id: 'rfm',
+    name: 'RFM分析',
+    path: '/rfm',
+    description: '顧客を最新購入日、購入頻度、購入金額でセグメンテーション',
+    icon: '🔍',
+    status: 'available'
   }
 ];
 
