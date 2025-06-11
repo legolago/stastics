@@ -1,0 +1,8 @@
+Collecting lightgbm
+  Downloading lightgbm-4.6.0-py3-none-manylinux2014_aarch64.whl.metadata (17 kB)
+Requirement already satisfied: numpy>=1.17.0 in /usr/local/lib/python3.11/site-packages (from lightgbm) (1.25.2)
+Requirement already satisfied: scipy in /usr/local/lib/python3.11/site-packages (from lightgbm) (1.11.4)
+Downloading lightgbm-4.6.0-py3-none-manylinux2014_aarch64.whl (3.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.5/3.5 MB 57.4 MB/s eta 0:00:00
+Installing collected packages: lightgbm
+Successfully installed lightgbm-4.6.0

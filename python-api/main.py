@@ -77,6 +77,16 @@ except ImportError:
     routers_status["rfm"] = False
     print("⚠️ RFM router not found")
 
+# 時系列分析ルーター
+try:
+    from routers import timeseries
+
+    routers_status["timeseries"] = True
+    print("✓ Timeseries router loaded")
+except ImportError:
+    routers_status["timeseries"] = False
+    print("⚠️ Timeseries router not found")
+
 # FastAPIアプリケーションを作成
 app = FastAPI(
     title="多変量解析API",
@@ -128,6 +138,11 @@ if routers_status["regression"]:
 if routers_status["rfm"]:
     app.include_router(rfm.router, prefix="/api")
     print("  ✓ RFM: /api/rfm")
+
+# ルーター登録部分に追加
+if routers_status["timeseries"]:
+    app.include_router(timeseries.router, prefix="/api")
+    print("  ✓ Timeseries: /api/timeseries")
 
 print(
     f"📋 Router registration complete. Active routers: {sum(routers_status.values())}/{len(routers_status)}"
@@ -329,6 +344,77 @@ async def get_available_methods():
                     "離脱した優良顧客",
                     "離脱しつつある顧客",
                     "離脱顧客",
+                ],
+            }
+        )
+
+    # 時系列分析
+    if routers_status["timeseries"]:
+        methods.append(
+            {
+                "id": "timeseries",
+                "name": "時系列分析",
+                "description": "LightGBMを活用した時系列予測分析",
+                "endpoint": "/api/timeseries/analyze",
+                "status": "available",
+                "parameters_endpoint": "/api/timeseries/parameters/validate",
+                "methods_endpoint": "/api/timeseries/methods",
+                "interpretation_endpoint": "/api/timeseries/interpretation",
+                "session_detail_endpoint": "/api/timeseries/sessions/{session_id}",
+                "download_endpoints": {
+                    "predictions": "/api/timeseries/download/{session_id}/predictions",
+                    "forecast": "/api/timeseries/download/{session_id}/forecast",
+                    "feature_importance": "/api/timeseries/download/{session_id}/feature_importance",
+                    "details": "/api/timeseries/download/{session_id}/details",
+                },
+                "required_params": {
+                    "target_column": "予測対象の数値列（必須）",
+                    "date_column": "日付列（推奨、インデックス使用も可能）",
+                    "feature_columns": "説明変数列（任意、自動特徴量生成も可能）",
+                    "forecast_periods": "予測期間数（デフォルト: 30）",
+                    "test_size": "テストデータ割合（デフォルト: 0.2）",
+                },
+                "supported_models": [
+                    {
+                        "name": "lightgbm",
+                        "display_name": "LightGBM",
+                        "description": "勾配ブースティング機械学習モデル（推奨）",
+                        "available": True,
+                    },
+                    {
+                        "name": "linear_regression",
+                        "display_name": "線形回帰",
+                        "description": "代替手法（LightGBM利用不可時）",
+                        "available": True,
+                    },
+                ],
+                "features": [
+                    "ラグ特徴量（過去の値）",
+                    "移動平均特徴量",
+                    "時間ベース特徴量（季節性）",
+                    "カスタム特徴量",
+                    "自動特徴量生成",
+                ],
+                "evaluation_metrics": [
+                    "RMSE（二乗平均平方根誤差）",
+                    "MAE（平均絶対誤差）",
+                    "R²（決定係数）",
+                    "MAPE（平均絶対パーセント誤差）",
+                ],
+                "parameter_examples": {
+                    "target_column": "例: sales, price, demand, temperature",
+                    "date_column": "例: date, timestamp, time",
+                    "feature_columns": "例: weather,holiday,promotion (カンマ区切り)",
+                    "forecast_periods": "例: 30 (30期間先まで予測)",
+                    "test_size": "例: 0.2 (20%をテストデータに使用)",
+                },
+                "use_cases": [
+                    "売上予測",
+                    "需要予測",
+                    "株価・金融データ予測",
+                    "気象データ予測",
+                    "Webアクセス数予測",
+                    "在庫管理",
                 ],
             }
         )
