@@ -426,10 +426,12 @@ KMO標本妥当性: {results['kmo']:.3f}
     def _save_coordinates_data(
         self, db, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
     ):
-        """PCA特有の座標データ保存"""
+        """PCA特有の座標データ保存（強化版）"""
         from models import CoordinatesData
 
         try:
+            print(f"📍 座標データ保存開始: session_id={session_id}")
+
             component_scores = results.get("component_scores")
             loadings = results.get("loadings")
             sample_names = results.get("sample_names", df.index.tolist())
@@ -437,6 +439,7 @@ KMO標本妥当性: {results['kmo']:.3f}
 
             # 主成分得点の保存（観測値として）
             if component_scores is not None:
+                print(f"📊 主成分得点保存: {len(sample_names)}件")
                 for i, name in enumerate(sample_names):
                     coord_data = CoordinatesData(
                         session_id=session_id,
@@ -452,11 +455,22 @@ KMO標本妥当性: {results['kmo']:.3f}
                             if component_scores.shape[1] > 1
                             else 0.0
                         ),
+                        dimension_3=(
+                            float(component_scores[i, 2])
+                            if component_scores.shape[1] > 2
+                            else 0.0
+                        ),
+                        dimension_4=(
+                            float(component_scores[i, 3])
+                            if component_scores.shape[1] > 3
+                            else 0.0
+                        ),
                     )
                     db.add(coord_data)
 
             # 主成分負荷量の保存（変数として）
             if loadings is not None:
+                print(f"📊 主成分負荷量保存: {len(feature_names)}件")
                 for i, name in enumerate(feature_names):
                     coord_data = CoordinatesData(
                         session_id=session_id,
@@ -674,12 +688,15 @@ KMO標本妥当性: {results['kmo']:.3f}
         results: Dict[str, Any],
         plot_base64: str,
     ) -> int:
-        """データベース保存処理（factor形式に合わせて修正）"""
+        """データベース保存処理（analysis_type='pca'確実設定版）"""
         try:
             print("=== PCA データベース保存開始 ===")
+            analysis_type = self.get_analysis_type()  # 'pca'を取得
+            print(f"📊 分析タイプ: '{analysis_type}'")
 
-            # 基底クラスのメソッドを呼び出し
+            # 基底クラスのメソッドを呼び出し（但し、analysis_typeを確実に設定）
             if hasattr(super(), "save_to_database"):
+                print("🔄 基底クラスのsave_to_databaseを呼び出し")
                 session_id = super().save_to_database(
                     db,
                     session_name,
@@ -693,7 +710,7 @@ KMO標本妥当性: {results['kmo']:.3f}
                     plot_base64,
                 )
             else:
-                # 基底クラスにメソッドがない場合の直接保存
+                print("🔄 基底クラスにsave_to_databaseなし、直接保存実行")
                 session_id = self._save_session_directly(
                     db,
                     session_name,
@@ -707,12 +724,18 @@ KMO標本妥当性: {results['kmo']:.3f}
                     plot_base64,
                 )
 
+            print(f"✅ セッション保存完了: session_id={session_id}")
+
+            # 重要：保存後にanalysis_typeが正しく設定されているか確認・修正
+            self._ensure_analysis_type_correct(db, session_id)
+
             # PCA特有のデータを追加保存
             self._save_pca_specific_data(db, session_id, results)
 
             # 座標データを保存
             self._save_coordinates_data(db, session_id, df, results)
 
+            print(f"✅ PCA データベース保存完了: session_id={session_id}")
             return session_id
 
         except Exception as e:
@@ -720,7 +743,42 @@ KMO標本妥当性: {results['kmo']:.3f}
             import traceback
 
             print(f"詳細:\n{traceback.format_exc()}")
+            db.rollback()
             return 0
+
+    def _ensure_analysis_type_correct(self, db: Session, session_id: int):
+        """保存後にanalysis_typeが正しく設定されているか確認・修正"""
+        try:
+            from models import AnalysisSession
+
+            # セッションを取得
+            session = (
+                db.query(AnalysisSession)
+                .filter(AnalysisSession.id == session_id)
+                .first()
+            )
+            if session:
+                expected_type = self.get_analysis_type()  # 'pca'
+                current_type = session.analysis_type
+
+                print(
+                    f"📊 analysis_type確認: 期待値='{expected_type}', 現在値='{current_type}'"
+                )
+
+                if current_type != expected_type:
+                    print(
+                        f"⚠️ analysis_typeが不正です。修正します: '{current_type}' → '{expected_type}'"
+                    )
+                    session.analysis_type = expected_type
+                    db.commit()
+                    print(f"✅ analysis_type修正完了")
+                else:
+                    print(f"✅ analysis_typeは正常です: '{current_type}'")
+            else:
+                print(f"❌ セッション {session_id} が見つかりません")
+
+        except Exception as e:
+            print(f"❌ analysis_type確認エラー: {e}")
 
     def _save_pca_specific_data(
         self, db: Session, session_id: int, results: Dict[str, Any]
@@ -777,16 +835,25 @@ KMO標本妥当性: {results['kmo']:.3f}
         results: Dict[str, Any],
         plot_base64: str,
     ) -> int:
-        """基底クラスのメソッドがない場合の直接保存"""
+        """基底クラスのメソッドがない場合の直接保存（analysis_type確実設定版）"""
         try:
-            from models import AnalysisSession, VisualizationData, SessionTag
+            from models import (
+                AnalysisSession,
+                VisualizationData,
+                SessionTag,
+                OriginalData,
+            )
 
-            # セッション基本情報を保存
+            analysis_type = self.get_analysis_type()  # 'pca'を確実に取得
+            print(f"📝 直接保存開始 - analysis_type: '{analysis_type}'")
+
+            # セッション基本情報を保存（analysis_typeを確実に設定）
             session = AnalysisSession(
                 session_name=session_name,
                 description=description,
-                analysis_type=self.get_analysis_type(),
+                analysis_type=analysis_type,  # 必須：'pca'を確実に設定
                 filename=file.filename,
+                original_filename=file.filename,
                 csv_content=csv_text,
                 user_id=user_id,
                 row_count=df.shape[0],
@@ -804,11 +871,33 @@ KMO標本妥当性: {results['kmo']:.3f}
                     else 0
                 ),
                 standardized=results.get("standardized", False),
+                # KMO値をchi2_valueフィールドに保存（既存の互換性のため）
+                chi2_value=results.get("kmo", 0.0),
+                # 総寄与率をtotal_inertiaに保存
+                total_inertia=results.get("total_inertia", 0.0),
             )
+
+            print(f"📊 保存するセッション情報:")
+            print(f"  - session_name: {session.session_name}")
+            print(
+                f"  - analysis_type: '{session.analysis_type}'"
+            )  # 必ず'pca'であることを確認
+            print(f"  - filename: {session.filename}")
+            print(f"  - row_count: {session.row_count}")
+            print(f"  - column_count: {session.column_count}")
+            print(f"  - dimensions_count: {session.dimensions_count}")
 
             db.add(session)
             db.flush()  # IDを取得するため
-            session_id = session.session_id
+            session_id = session.id
+
+            print(f"✅ セッション保存完了: session_id={session_id}")
+
+            # 元データを保存
+            if csv_text:
+                original_data = OriginalData(session_id=session_id, csv_data=csv_text)
+                db.add(original_data)
+                print(f"✅ 元データ保存完了")
 
             # タグを保存
             if tags:
@@ -818,22 +907,63 @@ KMO標本妥当性: {results['kmo']:.3f}
                             session_id=session_id, tag_name=tag.strip()
                         )
                         db.add(session_tag)
+                print(f"✅ タグ保存完了: {len(tags)}件")
 
             # プロット画像を保存
             if plot_base64:
                 visualization = VisualizationData(
                     session_id=session_id,
-                    plot_image=plot_base64,
-                    plot_width=1600,
-                    plot_height=1200,
+                    image_base64=plot_base64,
+                    width=1600,
+                    height=1200,
                 )
                 db.add(visualization)
+                print(f"✅ プロット画像保存完了")
+
+            # 固有値データを保存
+            if "eigenvalues" in results and "explained_variance_ratio" in results:
+                from models import EigenvalueData
+
+                eigenvalues = results["eigenvalues"]
+                explained_ratios = results["explained_variance_ratio"]
+                cumulative_ratios = results["cumulative_variance_ratio"]
+
+                for i, (eigenval, explained, cumulative) in enumerate(
+                    zip(eigenvalues, explained_ratios, cumulative_ratios)
+                ):
+                    eigenvalue_data = EigenvalueData(
+                        session_id=session_id,
+                        dimension_number=i + 1,
+                        eigenvalue=float(eigenval),
+                        explained_inertia=float(explained),
+                        cumulative_inertia=float(cumulative),
+                    )
+                    db.add(eigenvalue_data)
+                print(f"✅ 固有値データ保存完了: {len(eigenvalues)}件")
 
             db.commit()
+            print(f"✅ 全データコミット完了: session_id={session_id}")
+
+            # 保存後の確認
+            saved_session = (
+                db.query(AnalysisSession)
+                .filter(AnalysisSession.id == session_id)
+                .first()
+            )
+            if saved_session:
+                print(f"💾 保存後確認 - analysis_type: '{saved_session.analysis_type}'")
+                if saved_session.analysis_type != analysis_type:
+                    print(f"❌ 警告: analysis_typeが期待値と異なります！")
+                else:
+                    print(f"✅ analysis_typeは正常に保存されました")
+
             return session_id
 
         except Exception as e:
             print(f"❌ 直接保存エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
             db.rollback()
             return 0
 

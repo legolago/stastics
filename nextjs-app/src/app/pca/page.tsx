@@ -39,162 +39,252 @@ export default function PCAPage() {
 
   // セッション履歴を取得
   const fetchSessions = async () => {
-  try {
-    setSessionsLoading(true);
-    const params = new URLSearchParams({
-      userId: 'default',
-      limit: '50',
-      offset: '0',
-      analysis_type: 'pca' // 明示的にPCA指定
-    });
-
-    console.log('🔍 PCA sessions request:', `/api/sessions?${params.toString()}`);
-    
-    const response = await fetch(`/api/sessions?${params.toString()}`);
-    const data = await response.json();
-    
-    console.log('📊 API Response:', data);
-
-    if (data.success) {
-      // 強制的な二重フィルタリング
-      const allSessions: AnalysisSession[] = data.data || [];
-        const pcaSessionsOnly = allSessions.filter((session: AnalysisSession) => {
-        const sessionType = session.analysis_type;
-        const isPCA = sessionType === 'pca';
+    try {
+      setSessionsLoading(true);
+      setError(null);
+      console.log('🔍 PCA履歴取得開始（PCA専用エンドポイント版）');
+      console.log('🕐 現在時刻:', new Date().toISOString());
+      
+      // FastAPIのPCA専用エンドポイントに直接アクセス
+      const fastApiUrl = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+      const params = new URLSearchParams({
+        user_id: 'default',
+        limit: '50',
+        offset: '0'
+      });
+      
+      // まずシンプル版を試行
+      let requestUrl = `${fastApiUrl}/api/pca/sessions-simple?${params.toString()}`;
+      console.log('📤 PCA専用エンドポイント呼び出し（シンプル版）:', requestUrl);
+      
+      let response = await fetch(requestUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      // シンプル版が失敗した場合、通常版を試行
+      if (!response.ok) {
+        console.log('⚠️ シンプル版失敗、通常版を試行');
+        requestUrl = `${fastApiUrl}/api/pca/sessions?${params.toString()}`;
+        console.log('📤 PCA専用エンドポイント呼び出し（通常版）:', requestUrl);
         
-        if (!isPCA) {
-          console.warn(`⚠️ Non-PCA session found: ${session.session_id} (type: ${sessionType})`);
+        response = await fetch(requestUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+      }
+      
+      console.log('📥 Response status:', response.status);
+      console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ PCA専用エンドポイントエラー:', errorText);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      console.log('📥 PCA専用エンドポイント レスポンス:', {
+        success: data.success,
+        dataLength: data.data?.length || 0,
+        total: data.total,
+        hasMore: data.has_more
+      });
+      
+      if (data.success && Array.isArray(data.data)) {
+        const sessions = data.data;
+        
+        console.log('📊 PCA専用エンドポイント 詳細:');
+        console.log(`  - 取得セッション数: ${sessions.length}`);
+        console.log(`  - 総セッション数: ${data.total}`);
+        
+        // 各セッションの詳細をログ出力（最初の5件）
+        sessions.slice(0, 5).forEach((session, index) => {
+          console.log(`  ${index + 1}. Session ${session.id || session.session_id}: '${session.analysis_type}' | '${session.session_name}' | ${session.analysis_timestamp}`);
+        });
+        
+        // analysis_typeの確認
+        const allPCA = sessions.every(session => session.analysis_type === 'pca');
+        console.log(`✅ 全セッションがPCA: ${allPCA}`);
+        
+        if (!allPCA) {
+          const nonPCASessions = sessions.filter(session => session.analysis_type !== 'pca');
+          console.log(`⚠️ PCA以外のセッション: ${nonPCASessions.length}件`);
+          nonPCASessions.forEach((session, index) => {
+            console.log(`  非PCA ${index + 1}: Session ${session.id || session.session_id}: '${session.analysis_type}'`);
+          });
         }
         
-        return isPCA;
-      });
-      
-      console.log(`✅ Filtered sessions: ${allSessions.length} → ${pcaSessionsOnly.length} (PCA only)`);
-      
-      // デバッグ: 分析タイプ別カウント
-      const typeCounts: Record<string, number> = {};
-      allSessions.forEach((session: AnalysisSession) => {
-        const type = session.analysis_type || 'undefined';
-        typeCounts[type] = (typeCounts[type] || 0) + 1;
-      });
-      console.log('📈 Session types found:', typeCounts);
-      
-      setSessions(pcaSessionsOnly);
-    } else {
-      console.error('❌ API Error:', data);
-      setError(data.error || 'データ取得に失敗しました');
-    }
-  } catch (error) {
-    console.error('❌ Fetch Error:', error);
-    setError(error instanceof Error ? error.message : 'データ取得中にエラーが発生しました');
-  } finally {
-    setSessionsLoading(false);
-  }
-};
-  // APIレスポンス構造をデバッグする関数
-  const debugApiResponse = (data: any, level = 0) => {
-    const indent = '  '.repeat(level);
-    console.log(`${indent}🔍 Response structure analysis:`);
-    
-    if (typeof data !== 'object' || data === null) {
-      console.log(`${indent}Type: ${typeof data}, Value: ${data}`);
-      return;
-    }
-    
-    if (Array.isArray(data)) {
-      console.log(`${indent}Array with ${data.length} items`);
-      if (data.length > 0) {
-        console.log(`${indent}First item structure:`);
-        debugApiResponse(data[0], level + 1);
+        setSessions(sessions);
+        
+        if (sessions.length === 0) {
+          console.log('ℹ️ PCAセッションが見つかりませんでした');
+          setError('PCAセッションが見つかりません。新しいPCA分析を実行してください。');
+        } else {
+          console.log(`✅ PCA履歴取得成功: ${sessions.length}件`);
+        }
+        
+      } else {
+        console.error('❌ 無効なレスポンス形式:', data);
+        throw new Error(data.error || 'PCAセッション取得に失敗しました');
       }
-      return;
-    }
-    
-    console.log(`${indent}Object keys: [${Object.keys(data).join(', ')}]`);
-    
-    // 重要なキーを個別にチェック
-    const importantKeys = [
-      'analysis_data', 'pca_coordinates', 'coordinates', 
-      'scores', 'loadings', 'visualization', 'plot_image'
-    ];
-    importantKeys.forEach(key => {
-      if (data.hasOwnProperty(key)) {
-        console.log(`${indent}📋 ${key}:`);
-        if (key === 'scores' || key === 'loadings') {
-          if (Array.isArray(data[key])) {
-            console.log(`${indent}  Array with ${data[key].length} items`);
-            if (data[key].length > 0) {
-              console.log(`${indent}  Sample item:`, JSON.stringify(data[key][0], null, 2));
+      
+    } catch (error) {
+      console.error('❌ PCA履歴取得エラー:', error);
+      setError(error instanceof Error ? error.message : '不明なエラーが発生しました');
+      setSessions([]);
+      
+      // フォールバック: 汎用エンドポイントでの取得を試行
+      console.log('🔄 フォールバック: 汎用エンドポイントを試行');
+      try {
+        const fallbackParams = new URLSearchParams({
+          userId: 'default',
+          limit: '50',
+          offset: '0',
+          analysis_type: 'pca'
+        });
+        
+        const fallbackResponse = await fetch(`/api/sessions?${fallbackParams.toString()}`);
+        
+        if (fallbackResponse.ok) {
+          const fallbackData = await fallbackResponse.json();
+          console.log('📥 フォールバック結果:', {
+            success: fallbackData.success,
+            dataLength: fallbackData.data?.length || 0
+          });
+          
+          if (fallbackData.success && Array.isArray(fallbackData.data)) {
+            // PCAセッションのみをフィルタリング
+            const pcaSessions = fallbackData.data.filter(session => 
+              session.analysis_type === 'pca' || 
+              session.analysis_type === 'PCA' ||
+              (session.session_name && session.session_name.toLowerCase().includes('pca')) ||
+              (session.session_name && session.session_name.includes('主成分'))
+            );
+            
+            console.log(`🔄 フォールバック フィルタ結果: ${pcaSessions.length}件`);
+            
+            if (pcaSessions.length > 0) {
+              setSessions(pcaSessions);
+              setError(null);
+              console.log('✅ フォールバックで取得成功');
+            } else {
+              console.log('⚠️ フォールバックでもPCAセッションが見つからない');
             }
-          } else {
-            console.log(`${indent}  Type: ${typeof data[key]}`);
           }
-        } else if (level < 2) {
-          debugApiResponse(data[key], level + 1);
         }
+      } catch (fallbackError) {
+        console.error('❌ フォールバックも失敗:', fallbackError);
       }
-    });
+      
+    } finally {
+      setSessionsLoading(false);
+      console.log('🏁 PCA履歴取得処理完了');
+    }
   };
 
 // 修正版 fetchSessionDetail 関数
   const fetchSessionDetail = async (sessionId: number) => {
-  try {
-    console.log('🔍 PCA分析セッション詳細取得開始:', sessionId);
-    
-    // 新しいPCA専用エンドポイントを使用
-    const response = await fetch(`/api/pca/sessions/${sessionId}`);
-    
-    if (!response.ok) {
-      console.error(`HTTP ${response.status}: ${response.statusText}`);
-      const errorText = await response.text();
-      console.error('Error response:', errorText);
-      alert('セッション詳細の取得に失敗しました');
-      return;
-    }
-
-    const data: SessionDetailResponse = await response.json();
-    console.log('📥 PCA session detail response:', data);
-
-    if (data.success && data.data) {
-      const pythonResponse = data.data;
+    try {
+      console.log('🔍 PCA分析セッション詳細取得開始:', sessionId);
       
-      // 新しいデータ構造に対応
-      let scores = [];
-      let loadings = [];
-
-      // component_scores → component_scores_data に変更
-      if (pythonResponse.analysis_data?.component_scores) {
-        scores = pythonResponse.analysis_data.component_scores.map((scoreData: any) => ({
-          name: scoreData.name || scoreData.sample_name,
-          dimension_1: scoreData.dimension_1 || scoreData.pc_1,
-          dimension_2: scoreData.dimension_2 || scoreData.pc_2,
-          pc1: scoreData.dimension_1 || scoreData.pc_1,
-          pc2: scoreData.dimension_2 || scoreData.pc_2
-        }));
+      // FastAPIのPCA専用エンドポイントを直接使用
+      const fastApiUrl = process.env.NEXT_PUBLIC_FASTAPI_URL || 'http://localhost:8000';
+      const response = await fetch(`${fastApiUrl}/api/pca/sessions/${sessionId}`);
+      
+      if (!response.ok) {
+        console.error(`HTTP ${response.status}: ${response.statusText}`);
+        const errorText = await response.text();
+        console.error('Error response:', errorText);
+        alert('セッション詳細の取得に失敗しました');
+        return;
       }
 
-      // component_loadings → component_loadings_data に変更
-      if (pythonResponse.analysis_data?.component_loadings) {
-        loadings = pythonResponse.analysis_data.component_loadings.map((loadingData: any) => ({
-          name: loadingData.name || loadingData.variable_name,
-          dimension_1: loadingData.dimension_1 || loadingData.pc_1,
-          dimension_2: loadingData.dimension_2 || loadingData.pc_2,
-          pc1: loadingData.dimension_1 || loadingData.pc_1,
-          pc2: loadingData.dimension_2 || loadingData.pc_2
-        }));
-      }
+      const data: SessionDetailResponse = await response.json();
+      console.log('📥 PCA session detail response:', data);
 
-      // 残りの処理は同様...
-      
-    } else {
-      console.error('Invalid response format:', data);
-      alert('セッションデータの形式が不正です');
+      if (data.success && data.data) {
+        const pythonResponse = data.data;
+        
+        // 新しいデータ構造に対応
+        let scores = [];
+        let loadings = [];
+
+        // component_scores_data を優先、フォールバックで component_scores
+        if (pythonResponse.analysis_data?.component_scores) {
+          scores = pythonResponse.analysis_data.component_scores.map((scoreData: any) => ({
+            name: scoreData.name || scoreData.sample_name,
+            dimension_1: scoreData.dimension_1 || scoreData.pc_1,
+            dimension_2: scoreData.dimension_2 || scoreData.pc_2,
+            pc1: scoreData.dimension_1 || scoreData.pc_1,
+            pc2: scoreData.dimension_2 || scoreData.pc_2
+          }));
+        }
+
+        // component_loadings_data を優先、フォールバックで component_loadings
+        if (pythonResponse.analysis_data?.component_loadings) {
+          loadings = pythonResponse.analysis_data.component_loadings.map((loadingData: any) => ({
+            name: loadingData.name || loadingData.variable_name,
+            dimension_1: loadingData.dimension_1 || loadingData.pc_1,
+            dimension_2: loadingData.dimension_2 || loadingData.pc_2,
+            pc1: loadingData.dimension_1 || loadingData.pc_1,
+            pc2: loadingData.dimension_2 || loadingData.pc_2
+          }));
+        }
+
+        // PCAAnalysisResult形式に変換
+        const pcaResult: PCAAnalysisResult = {
+          success: true,
+          session_id: sessionId,
+          analysis_type: 'pca',
+          session_name: pythonResponse.session_info?.session_name,
+          data: {
+            n_components: pythonResponse.session_info?.dimensions_count || 2,
+            n_samples: pythonResponse.session_info?.row_count || scores.length,
+            n_features: pythonResponse.session_info?.column_count || loadings.length,
+            standardized: pythonResponse.session_info?.standardized || true,
+            explained_variance_ratio: pythonResponse.eigenvalue_data?.map((ev: any) => ev.explained_inertia) || [],
+            cumulative_variance_ratio: pythonResponse.eigenvalue_data?.map((ev: any) => ev.cumulative_inertia) || [],
+            eigenvalues: pythonResponse.eigenvalue_data?.map((ev: any) => ev.eigenvalue) || [],
+            kmo: pythonResponse.session_info?.kmo || 0,
+            determinant: pythonResponse.session_info?.determinant || 0,
+            coordinates: {
+              scores: scores,
+              loadings: loadings
+            },
+            plot_image: pythonResponse.visualization?.plot_image
+          },
+          metadata: {
+            session_name: pythonResponse.session_info?.session_name,
+            filename: pythonResponse.session_info?.filename,
+            rows: pythonResponse.session_info?.row_count,
+            columns: pythonResponse.session_info?.column_count,
+            feature_names: pythonResponse.metadata?.feature_names || [],
+            sample_names: pythonResponse.metadata?.sample_names || []
+          }
+        };
+
+        console.log('✅ PCA結果形式変換完了:', {
+          scores: scores.length,
+          loadings: loadings.length,
+          components: pcaResult.data.n_components
+        });
+
+        setResult(pcaResult);
+        
+      } else {
+        console.error('Invalid response format:', data);
+        alert('セッションデータの形式が不正です');
+      }
+    } catch (err) {
+      console.error('PCAセッション詳細取得エラー:', err);
+      alert('セッション詳細の取得中にエラーが発生しました');
     }
-  } catch (err) {
-    console.error('PCAセッション詳細取得エラー:', err);
-    alert('セッション詳細の取得中にエラーが発生しました');
-  }
-};
+  };
 
 const downloadPCALoadings = async (sessionId: number) => {
   try {
@@ -864,14 +954,18 @@ const downloadPCADetails = async (sessionId: number) => {
                       )}
                       
                       <div className="flex flex-wrap gap-1 mb-2">
-                        {session.tags.map((tag, index) => (
-                          <span
-                            key={index}
-                            className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded"
-                          >
-                            {tag}
-                          </span>
-                        ))}
+                        {session.tags && Array.isArray(session.tags) && session.tags.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mb-2">
+                            {session.tags.map((tag, index) => (
+                              <span
+                                key={index}
+                                className="bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                       
                       <div className="text-xs text-gray-500 space-y-1">

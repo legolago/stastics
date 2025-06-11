@@ -546,3 +546,592 @@ async def download_pca_scores(session_id: int, db: Session = Depends(get_db)):
             status_code=500,
             detail=f"主成分得点CSV出力中にエラーが発生しました: {str(e)}",
         )
+
+
+@router.get("/debug/sessions")
+async def debug_pca_sessions(
+    user_id: str = Query("default"), db: Session = Depends(get_db)
+):
+    """デバッグ用：PCAセッションの状態確認"""
+    try:
+        from models import AnalysisSession
+
+        print(f"🔧 PCAセッションデバッグ開始: user_id='{user_id}'")
+
+        # 全セッションを取得
+        all_sessions = (
+            db.query(AnalysisSession)
+            .filter(AnalysisSession.user_id == user_id)
+            .order_by(AnalysisSession.analysis_timestamp.desc())
+            .limit(50)
+            .all()
+        )
+
+        # 分析タイプ別集計
+        type_counts = {}
+        pca_sessions = []
+        session_details = []
+
+        for session in all_sessions:
+            analysis_type = session.analysis_type or "null"
+            type_counts[analysis_type] = type_counts.get(analysis_type, 0) + 1
+
+            session_info = {
+                "id": session.id,
+                "name": session.session_name,
+                "type": session.analysis_type,
+                "filename": session.original_filename,
+                "timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+            }
+            session_details.append(session_info)
+
+            # PCA関連セッションを抽出
+            if analysis_type in ["pca", "PCA", "principal_component_analysis"]:
+                pca_sessions.append(session_info)
+
+        print(f"🔧 デバッグ結果:")
+        print(f"  - 総セッション数: {len(all_sessions)}")
+        print(f"  - PCAセッション数: {len(pca_sessions)}")
+        print(f"  - 分析タイプ分布: {type_counts}")
+
+        return {
+            "success": True,
+            "debug_info": {
+                "user_id": user_id,
+                "total_sessions": len(all_sessions),
+                "pca_sessions_count": len(pca_sessions),
+                "type_distribution": type_counts,
+                "all_sessions": session_details,
+                "pca_sessions_only": pca_sessions,
+                "timestamp": datetime.now().isoformat(),
+            },
+            "recommendations": [
+                f"PCAセッションが見つからない場合は、新しい分析を実行してください",
+                f"analysis_typeが'pca'以外になっている場合は、データベースの保存処理に問題があります",
+                f"総セッション数: {len(all_sessions)}, PCA: {len(pca_sessions)}",
+            ],
+        }
+
+    except Exception as e:
+        print(f"❌ PCAデバッグエラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"PCAデバッグ実行エラー: {str(e)}")
+
+
+@router.post("/debug/fix-analysis-type")
+async def fix_pca_analysis_type(
+    user_id: str = Query("default"), db: Session = Depends(get_db)
+):
+    """デバッグ用：既存セッションのanalysis_typeを修正"""
+    try:
+        from models import AnalysisSession
+
+        print(f"🔧 PCA analysis_type修正開始: user_id='{user_id}'")
+
+        # PCA関連と思われるセッションを検索
+        sessions_to_fix = (
+            db.query(AnalysisSession)
+            .filter(AnalysisSession.user_id == user_id)
+            .filter(
+                # analysis_typeがnullまたは空、もしくはセッション名にPCAが含まれる
+                (AnalysisSession.analysis_type.is_(None))
+                | (AnalysisSession.analysis_type == "")
+                | (AnalysisSession.session_name.ilike("%pca%"))
+                | (AnalysisSession.session_name.ilike("%主成分%"))
+                | (AnalysisSession.original_filename.ilike("%pca%"))
+            )
+            .all()
+        )
+
+        fixed_count = 0
+        for session in sessions_to_fix:
+            old_type = session.analysis_type
+            session.analysis_type = "pca"  # 強制的にPCAに設定
+            fixed_count += 1
+            print(f"  修正: Session {session.id}: '{old_type}' → 'pca'")
+
+        if fixed_count > 0:
+            db.commit()
+            print(f"✅ {fixed_count}件のanalysis_typeを修正しました")
+        else:
+            print(f"修正対象のセッションはありませんでした")
+
+        return {
+            "success": True,
+            "fixed_count": fixed_count,
+            "message": f"{fixed_count}件のセッションのanalysis_typeを'pca'に修正しました",
+            "details": [
+                {
+                    "id": session.id,
+                    "name": session.session_name,
+                    "old_type": None,  # 修正前の値は記録していない
+                    "new_type": "pca",
+                }
+                for session in sessions_to_fix
+            ],
+        }
+
+    except Exception as e:
+        print(f"❌ PCA analysis_type修正エラー: {str(e)}")
+        db.rollback()
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, detail=f"analysis_type修正エラー: {str(e)}"
+        )
+
+
+# routers/pca.py の最後に以下のエンドポイントを追加（PCA履歴専用エンドポイント含む）
+
+
+@router.get("/sessions")
+async def get_pca_sessions_list(
+    user_id: str = Query("default", description="ユーザーID"),
+    limit: int = Query(50, description="取得件数"),
+    offset: int = Query(0, description="オフセット"),
+    db: Session = Depends(get_db),
+):
+    """PCA分析セッションの一覧を取得（analysis_type='pca'でフィルタリング）"""
+    try:
+        from models import AnalysisSession
+
+        print(
+            f"📊 PCA専用セッション一覧取得: user_id='{user_id}', limit={limit}, offset={offset}"
+        )
+
+        # PCAセッションのみを取得（analysis_type='pca'でフィルタリング）
+        query = (
+            db.query(AnalysisSession)
+            .filter(
+                AnalysisSession.user_id == user_id,
+                AnalysisSession.analysis_type == "pca",
+            )
+            .order_by(AnalysisSession.analysis_timestamp.desc())
+        )
+
+        # 総数を取得
+        total_count = query.count()
+        print(f"🔢 PCAセッション総数: {total_count}")
+
+        # ページネーション適用
+        sessions = query.offset(offset).limit(limit).all()
+        print(f"📄 取得したPCAセッション数: {len(sessions)}")
+
+        # セッションデータを整形
+        session_list = []
+        for session in sessions:
+            # タグを安全に取得（テーブル構造に依存しない方法）
+            tag_names = []
+            try:
+                # 複数のパターンでタグテーブルを試行
+                tag_queries = [
+                    # パターン1: SessionTag.tag_name
+                    lambda: db.execute(
+                        "SELECT tag_name FROM session_tags WHERE session_id = :session_id",
+                        {"session_id": session.id},
+                    ).fetchall(),
+                    # パターン2: SessionTag.name
+                    lambda: db.execute(
+                        "SELECT name FROM session_tags WHERE session_id = :session_id",
+                        {"session_id": session.id},
+                    ).fetchall(),
+                    # パターン3: tags テーブル
+                    lambda: db.execute(
+                        "SELECT tag FROM tags WHERE session_id = :session_id",
+                        {"session_id": session.id},
+                    ).fetchall(),
+                ]
+
+                for query_func in tag_queries:
+                    try:
+                        tag_rows = query_func()
+                        tag_names = [row[0] for row in tag_rows if row[0]]
+                        if tag_names:  # タグが見つかったら終了
+                            break
+                    except Exception as tag_error:
+                        continue  # 次のパターンを試行
+
+            except Exception as e:
+                print(f"⚠️ タグ取得エラー (session {session.id}): {e}")
+                tag_names = []  # エラーの場合は空リスト
+
+            session_data = {
+                "id": session.id,
+                "session_id": session.id,  # 互換性のため
+                "session_name": session.session_name,
+                "description": session.description or "",
+                "analysis_type": session.analysis_type,
+                "filename": session.original_filename or session.filename,
+                "original_filename": session.original_filename or session.filename,
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+                "analysis_timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "user_id": session.user_id,
+                "tags": tag_names,
+                # PCA特有の情報
+                "dimensions_count": getattr(session, "dimensions_count", 2),
+                "dimension_1_contribution": (
+                    float(session.dimension_1_contribution)
+                    if getattr(session, "dimension_1_contribution", None) is not None
+                    else 0.0
+                ),
+                "dimension_2_contribution": (
+                    float(session.dimension_2_contribution)
+                    if getattr(session, "dimension_2_contribution", None) is not None
+                    else 0.0
+                ),
+                "standardized": getattr(session, "standardized", True),
+                "kmo": (
+                    float(session.chi2_value)
+                    if getattr(session, "chi2_value", None) is not None
+                    else 0.0
+                ),
+                "chi2_value": (
+                    float(session.chi2_value)
+                    if getattr(session, "chi2_value", None) is not None
+                    else 0.0
+                ),
+            }
+            session_list.append(session_data)
+
+        print(f"✅ PCA専用セッション一覧取得完了: {len(session_list)}件")
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "data": session_list,
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(session_list) < total_count,
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ PCA専用セッション一覧取得エラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, detail=f"PCAセッション一覧取得エラー: {str(e)}"
+        )
+
+
+@router.get("/sessions-simple")
+async def get_pca_sessions_simple(
+    user_id: str = Query("default", description="ユーザーID"),
+    limit: int = Query(50, description="取得件数"),
+    offset: int = Query(0, description="オフセット"),
+    db: Session = Depends(get_db),
+):
+    """PCA分析セッションの一覧を取得（タグなし・シンプル版）"""
+    try:
+        from models import AnalysisSession
+
+        print(f"📊 PCA専用セッション一覧取得（シンプル版）: user_id='{user_id}'")
+
+        # PCAセッションのみを取得（analysis_type='pca'でフィルタリング）
+        query = (
+            db.query(AnalysisSession)
+            .filter(
+                AnalysisSession.user_id == user_id,
+                AnalysisSession.analysis_type == "pca",
+            )
+            .order_by(AnalysisSession.analysis_timestamp.desc())
+        )
+
+        # 総数を取得
+        total_count = query.count()
+        print(f"🔢 PCAセッション総数: {total_count}")
+
+        # ページネーション適用
+        sessions = query.offset(offset).limit(limit).all()
+        print(f"📄 取得したPCAセッション数: {len(sessions)}")
+
+        # セッションデータを整形（タグなし）
+        session_list = []
+        for session in sessions:
+            session_data = {
+                "id": session.id,
+                "session_id": session.id,  # 互換性のため
+                "session_name": session.session_name,
+                "description": session.description or "",
+                "analysis_type": session.analysis_type,
+                "filename": session.original_filename or session.filename,
+                "original_filename": session.original_filename or session.filename,
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+                "analysis_timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "user_id": session.user_id,
+                "tags": [],  # タグは空配列で固定
+                # PCA特有の情報
+                "dimensions_count": getattr(session, "dimensions_count", 2),
+                "dimension_1_contribution": (
+                    float(session.dimension_1_contribution)
+                    if getattr(session, "dimension_1_contribution", None) is not None
+                    else 0.0
+                ),
+                "dimension_2_contribution": (
+                    float(session.dimension_2_contribution)
+                    if getattr(session, "dimension_2_contribution", None) is not None
+                    else 0.0
+                ),
+                "standardized": getattr(session, "standardized", True),
+                "kmo": (
+                    float(session.chi2_value)
+                    if getattr(session, "chi2_value", None) is not None
+                    else 0.0
+                ),
+                "chi2_value": (
+                    float(session.chi2_value)
+                    if getattr(session, "chi2_value", None) is not None
+                    else 0.0
+                ),
+            }
+            session_list.append(session_data)
+
+        print(f"✅ PCA専用セッション一覧取得完了（シンプル版）: {len(session_list)}件")
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "data": session_list,
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(session_list) < total_count,
+            }
+        )
+
+    except Exception as e:
+        print(f"❌ PCA専用セッション一覧取得エラー（シンプル版）: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"PCAセッション一覧取得エラー（シンプル版）: {str(e)}",
+        )
+
+
+@router.get("/debug/sessions")
+async def debug_pca_sessions(
+    user_id: str = Query("default"), db: Session = Depends(get_db)
+):
+    """デバッグ用：PCAセッションの状態確認"""
+    try:
+        from models import AnalysisSession
+
+        print(f"🔧 PCAセッションデバッグ開始: user_id='{user_id}'")
+
+        # 全セッションを取得
+        all_sessions = (
+            db.query(AnalysisSession)
+            .filter(AnalysisSession.user_id == user_id)
+            .order_by(AnalysisSession.analysis_timestamp.desc())
+            .limit(50)
+            .all()
+        )
+
+        # 分析タイプ別集計
+        type_counts = {}
+        pca_sessions = []
+        session_details = []
+
+        for session in all_sessions:
+            analysis_type = session.analysis_type or "null"
+            type_counts[analysis_type] = type_counts.get(analysis_type, 0) + 1
+
+            session_info = {
+                "id": session.id,
+                "name": session.session_name,
+                "type": session.analysis_type,
+                "filename": session.original_filename,
+                "timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "row_count": session.row_count,
+                "column_count": session.column_count,
+            }
+            session_details.append(session_info)
+
+            # PCA関連セッションを抽出
+            if analysis_type in ["pca", "PCA", "principal_component_analysis"]:
+                pca_sessions.append(session_info)
+
+        print(f"🔧 デバッグ結果:")
+        print(f"  - 総セッション数: {len(all_sessions)}")
+        print(f"  - PCAセッション数: {len(pca_sessions)}")
+        print(f"  - 分析タイプ分布: {type_counts}")
+
+        return {
+            "success": True,
+            "debug_info": {
+                "user_id": user_id,
+                "total_sessions": len(all_sessions),
+                "pca_sessions_count": len(pca_sessions),
+                "type_distribution": type_counts,
+                "all_sessions": session_details,
+                "pca_sessions_only": pca_sessions,
+                "timestamp": datetime.now().isoformat(),
+            },
+            "recommendations": [
+                f"PCAセッションが見つからない場合は、新しい分析を実行してください",
+                f"analysis_typeが'pca'以外になっている場合は、データベースの保存処理に問題があります",
+                f"総セッション数: {len(all_sessions)}, PCA: {len(pca_sessions)}",
+            ],
+        }
+
+    except Exception as e:
+        print(f"❌ PCAデバッグエラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"PCAデバッグ実行エラー: {str(e)}")
+
+
+@router.post("/debug/fix-analysis-type")
+async def fix_pca_analysis_type(
+    user_id: str = Query("default"), db: Session = Depends(get_db)
+):
+    """デバッグ用：既存セッションのanalysis_typeを修正"""
+    try:
+        from models import AnalysisSession
+
+        print(f"🔧 PCA analysis_type修正開始: user_id='{user_id}'")
+
+        # PCA関連と思われるセッションを検索
+        sessions_to_fix = (
+            db.query(AnalysisSession)
+            .filter(AnalysisSession.user_id == user_id)
+            .filter(
+                # analysis_typeがnullまたは空、もしくはセッション名にPCAが含まれる
+                (AnalysisSession.analysis_type.is_(None))
+                | (AnalysisSession.analysis_type == "")
+                | (AnalysisSession.session_name.ilike("%pca%"))
+                | (AnalysisSession.session_name.ilike("%主成分%"))
+                | (AnalysisSession.original_filename.ilike("%pca%"))
+            )
+            .all()
+        )
+
+        fixed_count = 0
+        for session in sessions_to_fix:
+            old_type = session.analysis_type
+            session.analysis_type = "pca"  # 強制的にPCAに設定
+            fixed_count += 1
+            print(f"  修正: Session {session.id}: '{old_type}' → 'pca'")
+
+        if fixed_count > 0:
+            db.commit()
+            print(f"✅ {fixed_count}件のanalysis_typeを修正しました")
+        else:
+            print(f"修正対象のセッションはありませんでした")
+
+        return {
+            "success": True,
+            "fixed_count": fixed_count,
+            "message": f"{fixed_count}件のセッションのanalysis_typeを'pca'に修正しました",
+            "details": [
+                {
+                    "id": session.id,
+                    "name": session.session_name,
+                    "old_type": None,  # 修正前の値は記録していない
+                    "new_type": "pca",
+                }
+                for session in sessions_to_fix
+            ],
+        }
+
+    except Exception as e:
+        print(f"❌ PCA analysis_type修正エラー: {str(e)}")
+        db.rollback()
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, detail=f"analysis_type修正エラー: {str(e)}"
+        )
+
+
+@router.post("/debug/fix-analysis-type")
+async def fix_pca_analysis_type(
+    user_id: str = Query("default"), db: Session = Depends(get_db)
+):
+    """デバッグ用：既存セッションのanalysis_typeを修正"""
+    try:
+        from models import AnalysisSession
+
+        print(f"🔧 PCA analysis_type修正開始: user_id='{user_id}'")
+
+        # PCA関連と思われるセッションを検索
+        sessions_to_fix = (
+            db.query(AnalysisSession)
+            .filter(AnalysisSession.user_id == user_id)
+            .filter(
+                # analysis_typeがnullまたは空、もしくはセッション名にPCAが含まれる
+                (AnalysisSession.analysis_type.is_(None))
+                | (AnalysisSession.analysis_type == "")
+                | (AnalysisSession.session_name.ilike("%pca%"))
+                | (AnalysisSession.session_name.ilike("%主成分%"))
+                | (AnalysisSession.original_filename.ilike("%pca%"))
+            )
+            .all()
+        )
+
+        fixed_count = 0
+        for session in sessions_to_fix:
+            old_type = session.analysis_type
+            session.analysis_type = "pca"  # 強制的にPCAに設定
+            fixed_count += 1
+            print(f"  修正: Session {session.id}: '{old_type}' → 'pca'")
+
+        if fixed_count > 0:
+            db.commit()
+            print(f"✅ {fixed_count}件のanalysis_typeを修正しました")
+        else:
+            print(f"修正対象のセッションはありませんでした")
+
+        return {
+            "success": True,
+            "fixed_count": fixed_count,
+            "message": f"{fixed_count}件のセッションのanalysis_typeを'pca'に修正しました",
+            "details": [
+                {
+                    "id": session.id,
+                    "name": session.session_name,
+                    "old_type": None,  # 修正前の値は記録していない
+                    "new_type": "pca",
+                }
+                for session in sessions_to_fix
+            ],
+        }
+
+    except Exception as e:
+        print(f"❌ PCA analysis_type修正エラー: {str(e)}")
+        db.rollback()
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, detail=f"analysis_type修正エラー: {str(e)}"
+        )

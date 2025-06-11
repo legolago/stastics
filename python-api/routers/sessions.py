@@ -19,6 +19,7 @@ from models import (
     AnalysisMetadata,
     AnalysisTypes,
     MetadataTypes,
+    SessionTag,
 )
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
