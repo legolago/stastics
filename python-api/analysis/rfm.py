@@ -11,6 +11,7 @@ import seaborn as sns
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from .base import BaseAnalyzer
+from models import AnalysisSession, AnalysisMetadata, CoordinatesData
 
 
 class RFMAnalysisAnalyzer(BaseAnalyzer):
@@ -72,7 +73,16 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             )
 
             if not session:
-                raise ValueError(f"セッション {session_id} が見つかりません")
+                return {
+                    "success": False,
+                    "error": f"セッション {session_id} が見つかりません",
+                }
+
+            if session.analysis_type != "rfm":
+                return {
+                    "success": False,
+                    "error": f"セッション {session_id} はRFM分析ではありません（type: {session.analysis_type}）",
+                }
 
             # メタデータの取得
             metadata = (
@@ -94,6 +104,7 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
 
             # セッション詳細の構築
             session_detail = {
+                "success": True,
                 "session_id": session.id,
                 "session_name": session.session_name,
                 "analysis_type": "rfm",
@@ -134,7 +145,10 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
 
         except Exception as e:
             print(f"❌ セッション詳細取得エラー: {str(e)}")
-            raise
+            return {
+                "success": False,
+                "error": f"セッション詳細取得中にエラーが発生しました: {str(e)}",
+            }
 
     def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
         """RFM分析の可視化を作成"""
@@ -260,10 +274,13 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
     ) -> Dict[str, Any]:
         """レスポンスデータを作成"""
         try:
+            results["plot_base64"] = plot_base64
+
             return {
                 "success": True,
                 "session_id": session_id,
                 "analysis_type": self.get_analysis_type(),
+                "plot_base64": plot_base64,
                 "data": {
                     "total_customers": results["total_customers"],
                     "analysis_date": results["analysis_date"],
@@ -278,7 +295,7 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
                     # セグメント定義
                     "segment_definitions": results["segment_definitions"],
                     # プロット画像
-                    "plot_image": plot_base64,
+                    "plot_base64": plot_base64,  # ✅ data内にも追加
                 },
                 "metadata": {
                     "session_name": session_name,
@@ -718,8 +735,15 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             rfm_metadata = {
                 "rfm_stats": results.get("rfm_stats", {}),
                 "segment_counts": results.get("segment_counts", {}),
+                "segment_stats": results.get("segment_stats", {}),  # ✅ 追加
+                "segment_definitions": results.get(
+                    "segment_definitions", {}
+                ),  # ✅ 追加
+                "customer_data": results.get("customer_rfm_data", []),  # ✅ 追加
                 "analysis_date": results.get("analysis_date", ""),
                 "total_customers": results.get("total_customers", 0),
+                "rfm_divisions": results.get("rfm_divisions", 3),  # ✅ 追加
+                "plot_base64": results.get("plot_base64", ""),  # ✅ プロット画像を追加
             }
 
             metadata = AnalysisMetadata(

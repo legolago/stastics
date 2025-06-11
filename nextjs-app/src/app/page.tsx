@@ -105,7 +105,7 @@ export default function StatisticsHomePage() {
           <rect x="17" y="17" width="4" height="4" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
         </svg>
       ),
-      features: ['顧客分析', 'マーケティング予測']
+      features: ['顧客分析', 'マーケティング予測', '顧客別施策検討']
     },
     {
       id: 'timeseries',

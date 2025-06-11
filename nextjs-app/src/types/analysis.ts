@@ -602,6 +602,7 @@ export interface AnalysisRequestParams {
   max_clusters?: number; // クラスター分析用
 }
 
+
 // 🔧 型安全なダウンロード関数の型
 export type DownloadHandler = (sessionId: number) => Promise<void>;
 export type AnalysisResultDownloadHandler = (result: AnalysisResult) => Promise<void>;

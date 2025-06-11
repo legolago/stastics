@@ -1,4 +1,3 @@
-
 // 📁 app/api/rfm/interpretation/route.ts (新規作成推奨)
 import { NextResponse } from 'next/server';
 

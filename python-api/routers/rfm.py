@@ -285,21 +285,98 @@ async def get_rfm_session_detail(
     try:
         print(f"📊 RFM分析セッション詳細取得開始: {session_id}")
 
-        # RFMAnalysisAnalyzerのインスタンスを作成
-        analyzer = RFMAnalysisAnalyzer()
+        # セッションの存在確認
+        session = (
+            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        )
 
-        # セッション詳細を取得
-        session_detail = await analyzer.get_session_detail(session_id, db)
-
-        print(f"🔍 取得されたセッション詳細: {session_detail.get('success', False)}")
-
-        if not session_detail or not session_detail.get("success"):
-            error_msg = (
-                session_detail.get("error", f"セッション {session_id} が見つかりません")
-                if session_detail
-                else f"セッション {session_id} が見つかりません"
+        if not session:
+            raise HTTPException(
+                status_code=404, detail=f"セッション {session_id} が存在しません"
             )
-            raise HTTPException(status_code=404, detail=error_msg)
+
+        if session.analysis_type != "rfm":
+            raise HTTPException(
+                status_code=400,
+                detail=f"セッション {session_id} はRFM分析のセッションではありません",
+            )
+
+        # メタデータの取得
+        metadata_entries = (
+            db.query(AnalysisMetadata)
+            .filter(AnalysisMetadata.session_id == session_id)
+            .all()
+        )
+
+        # 顧客データの取得
+        customers = (
+            db.query(CoordinatesData)
+            .filter(
+                CoordinatesData.session_id == session_id,
+                CoordinatesData.point_type == "customer",
+            )
+            .all()
+        )
+
+        # RFM統計メタデータを取得
+        rfm_stats_data = None
+        for meta in metadata_entries:
+            if meta.metadata_type == "rfm_statistics":
+                rfm_stats_data = meta.metadata_content
+                break
+
+        # フロントエンドが期待する形式でレスポンスを構築
+        session_detail = {
+            "success": True,
+            "session_id": session.id,
+            "session_name": session.session_name,
+            "analysis_type": session.analysis_type,
+            "filename": session.original_filename,
+            "description": session.description,
+            "analysis_date": session.analysis_timestamp.isoformat(),
+            "row_count": session.row_count,
+            "column_count": session.column_count,
+            "has_data": len(customers) > 0,
+            "customer_count": len(customers),
+            "total_customers": (
+                rfm_stats_data.get("total_customers", len(customers))
+                if rfm_stats_data
+                else len(customers)
+            ),
+            "rfm_divisions": (
+                rfm_stats_data.get("rfm_divisions", 3) if rfm_stats_data else 3
+            ),
+            "customer_data": (
+                rfm_stats_data.get("customer_data", []) if rfm_stats_data else []
+            ),
+            "segment_counts": (
+                rfm_stats_data.get("segment_counts", {}) if rfm_stats_data else {}
+            ),
+            "rfm_statistics": {
+                "rfm_stats": (
+                    rfm_stats_data.get("rfm_stats", {}) if rfm_stats_data else {}
+                ),
+                "segment_stats": (
+                    rfm_stats_data.get("segment_stats", {}) if rfm_stats_data else {}
+                ),
+                "segment_definitions": (
+                    rfm_stats_data.get("segment_definitions", {})
+                    if rfm_stats_data
+                    else {}
+                ),
+            },
+            "plot_base64": (
+                rfm_stats_data.get("plot_base64", "") if rfm_stats_data else ""
+            ),
+            "download_urls": {
+                "customers": f"/api/rfm/download/{session_id}/customers",
+                "segments": f"/api/rfm/download/{session_id}/segments",
+                "details": f"/api/rfm/download/{session_id}/details",
+            },
+        }
+
+        print(f"✅ セッション {session_id} の詳細データを取得完了")
+        print(f"🖼️ プロット画像データ: {len(session_detail['plot_base64'])} 文字")
 
         return JSONResponse(content=session_detail)
 
@@ -310,7 +387,6 @@ async def get_rfm_session_detail(
         import traceback
 
         print(f"詳細:\n{traceback.format_exc()}")
-
         raise HTTPException(
             status_code=500,
             detail=f"セッション詳細の取得中にエラーが発生しました: {str(e)}",
