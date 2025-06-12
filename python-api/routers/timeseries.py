@@ -1,16 +1,19 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query, Form
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, File, UploadFile, Form, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from models import (
+    get_db,
+    AnalysisSession,
+    CoordinatesData,
+    AnalysisMetadata,
+    OriginalData,
+)
 import pandas as pd
 import numpy as np
 import io
 import csv
-from typing import Optional, List
 
-from models import get_db
-from analysis.timeseries import TimeSeriesAnalyzer
-
-# LightGBMの利用可能性チェック
+# LightGBMの条件付きインポート
 try:
     import lightgbm as lgb
 
@@ -18,712 +21,506 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
-router = APIRouter(prefix="/timeseries", tags=["timeseries"])
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+router = APIRouter()
 
 
-@router.post("/analyze")
-async def analyze_timeseries(
-    file: UploadFile = File(...),
-    session_name: str = Form(..., description="分析セッション名"),
-    description: Optional[str] = Form(None, description="分析の説明"),
-    tags: Optional[str] = Form(None, description="タグ（カンマ区切り）"),
-    user_id: str = Form("default", description="ユーザーID"),
-    target_column: str = Form(..., description="目的変数列名"),
-    date_column: Optional[str] = Form(None, description="日付列名"),
-    feature_columns: Optional[str] = Form(
-        None, description="説明変数列名（カンマ区切り）"
-    ),
-    forecast_periods: int = Form(30, description="予測期間数"),
-    test_size: float = Form(0.2, description="テストデータの割合"),
-    db: Session = Depends(get_db),
-):
-    """時系列分析を実行"""
-    try:
-        print(f"=== 時系列分析API呼び出し開始 ===")
-        print(f"ファイル: {file.filename}")
-        print(f"セッション: {session_name}")
-        print(f"目的変数: {target_column}, 日付列: {date_column}")
-        print(f"予測期間: {forecast_periods}, テストサイズ: {test_size}")
+class SimpleTimeSeriesAnalyzer:
+    """簡略化された時系列分析クラス"""
 
-        # ファイル検証
-        if not file.filename.endswith(".csv"):
-            raise HTTPException(status_code=400, detail="CSVファイルのみ対応しています")
+    def _create_features(self, df, target_column, date_column, feature_columns=None):
+        """時系列特徴量を作成"""
+        print("=== 特徴量作成開始 ===")
 
-        # CSVファイル読み込み
-        contents = await file.read()
-        try:
-            csv_text = contents.decode("utf-8")
-        except UnicodeDecodeError:
-            csv_text = contents.decode("shift_jis")
+        df_features = df.copy()
 
-        print(f"CSVテキスト:\n{csv_text[:500]}...")
+        # 日付列を datetime に変換
+        if date_column in df_features.columns:
+            df_features[date_column] = pd.to_datetime(df_features[date_column])
+            df_features = df_features.sort_values(date_column)
+            df_features = df_features.reset_index(drop=True)
 
-        df = pd.read_csv(io.StringIO(csv_text))
-        print(f"データフレーム形状: {df.shape}")
-        print(f"列名: {list(df.columns)}")
-
-        if df.empty:
-            raise HTTPException(status_code=400, detail="空のファイルです")
-
-        # 目的変数の存在確認
-        if target_column not in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"目的変数 '{target_column}' が見つかりません。利用可能な列: {list(df.columns)}",
-            )
-
-        # 数値データの確認
-        if target_column not in df.select_dtypes(include=[np.number]).columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"目的変数 '{target_column}' は数値型である必要があります",
-            )
-
-        # 日付列の確認
-        if date_column and date_column not in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"日付列 '{date_column}' が見つかりません。利用可能な列: {list(df.columns)}",
-            )
-
-        # 特徴量列の処理
-        feature_list = None
+        # 元の特徴量を追加
+        feature_cols = []
         if feature_columns:
-            feature_list = [col.strip() for col in feature_columns.split(",")]
-            missing_features = [col for col in feature_list if col not in df.columns]
-            if missing_features:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"特徴量 {missing_features} が見つかりません",
+            for col in feature_columns:
+                if col in df_features.columns and col != target_column:
+                    feature_cols.append(col)
+                    print(f"元の特徴量を追加: {col}")
+
+        # ラグ特徴量を作成
+        for lag in [1, 3, 7]:
+            if len(df_features) > lag:
+                lag_col = f"{target_column}_lag_{lag}"
+                df_features[lag_col] = df_features[target_column].shift(lag)
+                feature_cols.append(lag_col)
+                print(f"ラグ特徴量作成: {lag_col}")
+
+        # 移動平均特徴量を作成
+        for window in [3, 7]:
+            if len(df_features) >= window:
+                ma_col = f"{target_column}_ma_{window}"
+                df_features[ma_col] = (
+                    df_features[target_column]
+                    .rolling(window=window, min_periods=1)
+                    .mean()
                 )
+                feature_cols.append(ma_col)
+                print(f"移動平均特徴量作成: {ma_col}")
 
-        # 欠損値の確認
-        if df[target_column].isnull().all():
-            raise HTTPException(
-                status_code=400, detail=f"目的変数 '{target_column}' がすべて欠損値です"
-            )
+        # 日付特徴量を作成（分散が0でない場合のみ）
+        if date_column in df_features.columns:
+            month_vals = df_features[date_column].dt.month
+            quarter_vals = df_features[date_column].dt.quarter
+            dow_vals = df_features[date_column].dt.dayofweek
 
-        # タグ処理
-        tag_list = [tag.strip() for tag in tags.split(",")] if tags else []
+            # 分散チェック
+            if month_vals.var() > 0:
+                df_features["month"] = month_vals
+                feature_cols.append("month")
+                print(f"日付特徴量追加: month (分散={month_vals.var():.4f})")
+            else:
+                print("月特徴量をスキップ: 分散が0")
 
-        # 分析実行
-        analyzer = TimeSeriesAnalyzer()
-        response_data = analyzer.run_full_analysis(
-            df=df,
-            db=db,
-            session_name=session_name,
-            description=description,
-            tags=tag_list,
-            user_id=user_id,
-            file=file,
-            csv_text=csv_text,
-            target_column=target_column,
-            date_column=date_column,
-            feature_columns=feature_list,
-            forecast_periods=forecast_periods,
-            test_size=test_size,
-        )
+            if quarter_vals.var() > 0:
+                df_features["quarter"] = quarter_vals
+                feature_cols.append("quarter")
+                print(f"日付特徴量追加: quarter (分散={quarter_vals.var():.4f})")
+            else:
+                print("四半期特徴量をスキップ: 分散が0")
 
-        print("=== 時系列分析API処理完了 ===")
-        return JSONResponse(content=response_data)
+            if dow_vals.var() > 0:
+                df_features["day_of_week"] = dow_vals
+                feature_cols.append("day_of_week")
+                print(f"日付特徴量追加: day_of_week (分散={dow_vals.var():.4f})")
+            else:
+                print("曜日特徴量をスキップ: 分散が0")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"=== 時系列分析API処理エラー ===")
-        print(f"エラー: {str(e)}")
-        import traceback
+        # 日付列とターゲット列を特徴量から除外
+        feature_cols = [
+            col for col in feature_cols if col != date_column and col != target_column
+        ]
 
-        print(f"詳細:\n{traceback.format_exc()}")
+        # 存在しない列を除外
+        feature_cols = [col for col in feature_cols if col in df_features.columns]
 
-        raise HTTPException(
-            status_code=500, detail=f"時系列分析中にエラーが発生しました: {str(e)}"
-        )
+        print(f"最終的な特徴量: {feature_cols}")
 
+        # NaN値を削除
+        initial_rows = len(df_features)
+        df_features = df_features.dropna()
+        final_rows = len(df_features)
+        print(f"NaN削除後: {initial_rows} -> {final_rows} 行")
 
-@router.get("/methods")
-async def get_timeseries_methods():
-    """時系列分析で利用可能な手法一覧を取得"""
-    methods = {
-        "models": [
-            {
-                "id": "lightgbm",
-                "name": "LightGBM",
-                "description": "勾配ブースティング機械学習モデル",
-                "available": LIGHTGBM_AVAILABLE,
-                "recommended": True,
-            },
-            {
-                "id": "linear_regression",
-                "name": "線形回帰",
-                "description": "代替手法（LightGBM利用不可時）",
-                "available": True,
-                "recommended": False,
-            },
-        ],
-        "features": {
-            "lag_features": "ラグ特徴量（1, 3, 7, 14期間前の値）",
-            "moving_averages": "移動平均特徴量（3, 7, 14期間）",
-            "time_features": "時間ベース特徴量（月、四半期、曜日など）",
-            "custom_features": "ユーザー指定特徴量",
-        },
-        "evaluation_metrics": [
-            {"name": "RMSE", "description": "二乗平均平方根誤差"},
-            {"name": "MAE", "description": "平均絶対誤差"},
-            {"name": "R²", "description": "決定係数"},
-            {"name": "MAPE", "description": "平均絶対パーセント誤差"},
-        ],
-        "guidelines": {
-            "minimum_samples": "最低30サンプル推奨",
-            "test_size_range": "0.1-0.3（テストデータ割合）",
-            "forecast_periods": "元データの10-30%程度推奨",
-            "required_columns": {
-                "target": "予測対象の数値列（必須）",
-                "date": "日付列（推奨、自動インデックス化可能）",
-                "features": "説明変数（任意、自動特徴量生成も可能）",
-            },
-        },
-        "library_status": {
-            "lightgbm": LIGHTGBM_AVAILABLE,
-            "sklearn_alternative": True,
-            "pandas": True,
-            "numpy": True,
-        },
-    }
+        # 数値型に変換
+        for col in feature_cols:
+            if col in df_features.columns:
+                df_features[col] = pd.to_numeric(df_features[col], errors="coerce")
 
-    return methods
+        df_features = df_features.dropna()
+
+        # 特徴量の分散をチェック（分散が極小の特徴量を除外）
+        print("=== 特徴量の分散チェック ===")
+        filtered_features = []
+        for col in feature_cols:
+            if col in df_features.columns:
+                variance = df_features[col].var()
+                mean_val = df_features[col].mean()
+
+                # 分散が極小（1e-8未満）の特徴量を除外
+                if variance > 1e-8:
+                    filtered_features.append(col)
+                    print(f"{col}: mean={mean_val:.4f}, var={variance:.4f} ✓")
+                else:
+                    print(
+                        f"{col}: mean={mean_val:.4f}, var={variance:.4f} ✗ (分散が小さすぎるため除外)"
+                    )
+
+        feature_cols = filtered_features
+        print(f"分散フィルタ後の特徴量: {feature_cols}")
+        print(f"特徴量作成完了: {len(feature_cols)}個の特徴量, {len(df_features)}行")
+        return df_features, feature_cols
 
 
-@router.get("/parameters/validate")
-async def validate_timeseries_parameters(
-    target_column: str = Query(..., description="目的変数列名"),
-    date_column: Optional[str] = Query(None, description="日付列名"),
-    feature_columns: Optional[str] = Query(None, description="特徴量列名"),
-    forecast_periods: int = Query(30, description="予測期間数"),
-    test_size: float = Query(0.2, description="テストデータ割合"),
+@router.post("/timeseries/features")
+async def extract_features_only(
+    file: UploadFile = File(...),
+    target_column: str = Form(...),
+    date_column: str = Form(...),
+    feature_columns: str = Form(None),
 ):
-    """時系列分析パラメータの検証"""
-    validation_result = {"valid": True, "warnings": [], "errors": []}
-
-    # 目的変数の検証
-    if not target_column or not target_column.strip():
-        validation_result["errors"].append("目的変数列名は必須です")
-        validation_result["valid"] = False
-
-    # 予測期間の検証
-    if forecast_periods < 1:
-        validation_result["errors"].append("予測期間は1以上である必要があります")
-        validation_result["valid"] = False
-    elif forecast_periods > 365:
-        validation_result["warnings"].append(
-            "予測期間が365を超えています。精度が低下する可能性があります"
-        )
-
-    # テストサイズの検証
-    if test_size <= 0 or test_size >= 1:
-        validation_result["errors"].append(
-            "テストサイズは0より大きく1より小さい値である必要があります"
-        )
-        validation_result["valid"] = False
-    elif test_size < 0.1 or test_size > 0.4:
-        validation_result["warnings"].append(
-            "テストサイズは0.1-0.4の範囲が推奨されます"
-        )
-
-    # 特徴量列の検証
-    if feature_columns:
-        feature_list = [col.strip() for col in feature_columns.split(",")]
-        if len(feature_list) > 50:
-            validation_result["warnings"].append(
-                "特徴量が多すぎます。モデルの複雑性が増加する可能性があります"
-            )
-
-    return validation_result
-
-
-@router.get("/interpretation")
-async def get_interpretation_guide():
-    """時系列分析結果の解釈ガイドを取得"""
-    return {
-        "model_metrics": {
-            "rmse": {
-                "description": "二乗平均平方根誤差 - 予測誤差の大きさ",
-                "interpretation": "値が小さいほど良好。目的変数の標準偏差と比較",
-            },
-            "mae": {
-                "description": "平均絶対誤差 - 平均的な予測誤差",
-                "interpretation": "実際の値の単位で解釈しやすい誤差指標",
-            },
-            "r2_score": {
-                "description": "決定係数 - モデルの説明力",
-                "ranges": {
-                    "0.9以上": "非常に良好",
-                    "0.7-0.9": "良好",
-                    "0.5-0.7": "中程度",
-                    "0.5未満": "要改善",
-                },
-            },
-            "mape": {
-                "description": "平均絶対パーセント誤差",
-                "ranges": {
-                    "5%未満": "非常に良好",
-                    "5-10%": "良好",
-                    "10-25%": "中程度",
-                    "25%以上": "要改善",
-                },
-            },
-        },
-        "feature_importance": {
-            "description": "各特徴量の予測への寄与度",
-            "interpretation": {
-                "lag_features": "過去の値の影響度",
-                "moving_averages": "トレンドの影響度",
-                "time_features": "季節性・周期性の影響度",
-                "external_features": "外部要因の影響度",
-            },
-        },
-        "residual_analysis": {
-            "description": "残差（実測値 - 予測値）の分析",
-            "good_signs": [
-                "残差が0周辺にランダムに分布",
-                "残差に明確なパターンがない",
-                "残差の分散が一定",
-            ],
-            "warning_signs": [
-                "残差に周期的なパターン",
-                "残差の分散が時間で変化",
-                "外れ値が多数存在",
-            ],
-        },
-        "forecast_reliability": {
-            "description": "予測の信頼性評価",
-            "factors": [
-                "モデルの性能指標（R²、RMSE等）",
-                "予測期間の長さ（短期ほど信頼性高）",
-                "データの安定性（トレンド・季節性）",
-                "外部要因の変化可能性",
-            ],
-        },
-    }
-
-
-@router.get("/sessions/{session_id}")
-async def get_timeseries_session_detail(
-    session_id: int,
-    db: Session = Depends(get_db),
-):
-    """時系列分析セッション詳細を取得"""
+    """特徴量のみを抽出して返す（モデル訓練なし）"""
     try:
-        print(f"📊 時系列分析セッション詳細取得開始: {session_id}")
+        print("=== 特徴量抽出API開始 ===")
 
-        # TimeSeriesAnalyzerのインスタンスを作成
-        analyzer = TimeSeriesAnalyzer()
+        # CSVファイルを読み込み
+        content = await file.read()
+        df = pd.read_csv(io.StringIO(content.decode("utf-8")))
 
-        # セッション詳細を取得
-        session_detail = analyzer.get_session_detail(db, session_id)
+        # 元の特徴量列を解析
+        original_features = []
+        if feature_columns:
+            original_features = [col.strip() for col in feature_columns.split(",")]
 
-        print(f"🔍 取得されたセッション詳細: {session_detail.get('success', False)}")
+        # 時系列分析器を初期化
+        analyzer = SimpleTimeSeriesAnalyzer()
 
-        if not session_detail or not session_detail.get("success"):
-            error_msg = (
-                session_detail.get("error", f"セッション {session_id} が見つかりません")
-                if session_detail
-                else f"セッション {session_id} が見つかりません"
-            )
-            raise HTTPException(status_code=404, detail=error_msg)
+        # 特徴量を作成
+        df_features, feature_cols = analyzer._create_features(
+            df, target_column, date_column, original_features
+        )
 
-        return JSONResponse(content=session_detail)
+        # 統計情報を計算（NumPy型変換付き）
+        feature_stats = {}
+        for col in feature_cols:
+            if col in df_features.columns:
+                values = df_features[col]
+                feature_stats[col] = {
+                    "mean": float(values.mean()),
+                    "std": float(values.std()),
+                    "min": float(values.min()),
+                    "max": float(values.max()),
+                    "variance": float(values.var()),
+                    "non_zero_count": int((values != 0).sum()),
+                    "total_count": int(len(values)),
+                    "non_zero_ratio": float((values != 0).sum() / len(values)),
+                }
 
-    except HTTPException:
-        raise
+        response = {
+            "success": True,
+            "data": {
+                "original_shape": [int(x) for x in df.shape],
+                "processed_shape": [int(x) for x in df_features.shape],
+                "target_column": target_column,
+                "date_column": date_column,
+                "feature_columns": feature_cols,
+                "feature_statistics": feature_stats,
+                "data_info": {
+                    "total_samples": int(len(df_features)),
+                    "feature_count": int(len(feature_cols)),
+                    "original_columns": list(df.columns),
+                    "processed_columns": list(df_features.columns),
+                    "rows_removed": int(len(df) - len(df_features)),
+                },
+                "sample_data": df_features[feature_cols + [target_column]]
+                .head()
+                .to_dict("records"),
+            },
+        }
+
+        print("=== 特徴量抽出API完了 ===")
+        return response
+
     except Exception as e:
-        print(f"❌ 時系列分析セッション詳細取得エラー: {str(e)}")
-        import traceback
-
-        print(f"詳細:\n{traceback.format_exc()}")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"セッション詳細の取得中にエラーが発生しました: {str(e)}",
-        )
-
-
-@router.get("/download/{session_id}/details")
-async def download_timeseries_details(session_id: int, db: Session = Depends(get_db)):
-    """時系列分析結果詳細をCSV形式でダウンロード"""
-    try:
-        from models import (
-            AnalysisSession,
-            AnalysisMetadata,
-            CoordinatesData,
-        )
-
-        print(f"Starting timeseries details download for session: {session_id}")
-
-        # セッション情報を取得
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
-
-        if session.analysis_type != "timeseries":
-            raise HTTPException(
-                status_code=400, detail="時系列分析のセッションではありません"
-            )
-
-        print(f"Session found: {session.session_name}")
-
-        # メタデータを取得
-        metadata_entries = (
-            db.query(AnalysisMetadata)
-            .filter(AnalysisMetadata.session_id == session_id)
-            .all()
-        )
-
-        # 座標データを取得
-        coordinates_data = (
-            db.query(CoordinatesData)
-            .filter(CoordinatesData.session_id == session_id)
-            .all()
-        )
-
-        print(
-            f"Found {len(metadata_entries)} metadata entries, {len(coordinates_data)} coordinates"
-        )
-
-        # CSVデータを作成
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        # セッション情報
-        writer.writerow(["セッション情報"])
-        writer.writerow(["項目", "値"])
-        writer.writerow(["セッション名", session.session_name])
-        writer.writerow(["ファイル名", session.original_filename])
-        writer.writerow(["分析手法", "時系列分析"])
-        writer.writerow(
-            ["分析日時", session.analysis_timestamp.strftime("%Y-%m-%d %H:%M:%S")]
-        )
-        writer.writerow(["サンプル数", session.row_count])
-        writer.writerow(["変数数", session.column_count])
-        writer.writerow([])
-
-        # モデル性能指標
-        model_metrics = {}
-        feature_importance = []
-        for meta in metadata_entries:
-            if meta.metadata_type == "timeseries_metrics":
-                content = meta.metadata_content
-                model_metrics = content.get("metrics", {})
-                feature_importance = content.get("feature_importance", [])
-                break
-
-        if model_metrics:
-            writer.writerow(["モデル性能指標"])
-            writer.writerow(["指標", "訓練データ", "テストデータ"])
-
-            train_metrics = model_metrics.get("train", {})
-            test_metrics = model_metrics.get("test", {})
-
-            for metric in ["rmse", "mae", "r2", "mape"]:
-                train_val = train_metrics.get(metric, 0)
-                test_val = test_metrics.get(metric, 0)
-                writer.writerow([metric.upper(), f"{train_val:.6f}", f"{test_val:.6f}"])
-            writer.writerow([])
-
-        # 特徴量重要度
-        if feature_importance:
-            writer.writerow(["特徴量重要度"])
-            writer.writerow(["特徴量名", "重要度"])
-            for feature_name, importance in feature_importance[:20]:  # 上位20個
-                writer.writerow([feature_name, f"{importance:.6f}"])
-            writer.writerow([])
-
-        # 実測値データ
-        actual_coords = [
-            coord for coord in coordinates_data if coord.point_type == "train"
-        ]
-        if actual_coords:
-            writer.writerow(["実測値（訓練データ）"])
-            writer.writerow(["タイムスタンプ", "値"])
-            for coord in sorted(actual_coords, key=lambda x: x.dimension_4 or 0):
-                writer.writerow(
-                    [
-                        coord.point_name,
-                        f"{coord.dimension_1:.6f}" if coord.dimension_1 else "0.000000",
-                    ]
-                )
-            writer.writerow([])
-
-        # 予測値と残差
-        pred_coords = [
-            coord for coord in coordinates_data if coord.point_type == "test"
-        ]
-        if pred_coords:
-            writer.writerow(["予測結果（テストデータ）"])
-            writer.writerow(["タイムスタンプ", "予測値", "実測値", "残差"])
-            for coord in sorted(pred_coords, key=lambda x: x.dimension_4 or 0):
-                writer.writerow(
-                    [
-                        coord.point_name,
-                        f"{coord.dimension_1:.6f}" if coord.dimension_1 else "0.000000",
-                        f"{coord.dimension_3:.6f}" if coord.dimension_3 else "0.000000",
-                        f"{coord.dimension_2:.6f}" if coord.dimension_2 else "0.000000",
-                    ]
-                )
-            writer.writerow([])
-
-        # 未来予測値
-        forecast_coords = [
-            coord for coord in coordinates_data if coord.point_type == "variable"
-        ]
-        if forecast_coords:
-            writer.writerow(["未来予測"])
-            writer.writerow(["タイムスタンプ", "予測値"])
-            for coord in sorted(forecast_coords, key=lambda x: x.dimension_4 or 0):
-                writer.writerow(
-                    [
-                        coord.point_name,
-                        f"{coord.dimension_1:.6f}" if coord.dimension_1 else "0.000000",
-                    ]
-                )
-            writer.writerow([])
-
-        # CSV内容を取得
-        csv_content = output.getvalue()
-        output.close()
-
-        print(f"Generated CSV content length: {len(csv_content)} characters")
-
-        # ファイル名設定
-        filename = f"timeseries_details_{session_id}.csv"
-
-        # Responseを作成
-        return StreamingResponse(
-            io.StringIO(csv_content),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"詳細CSV出力エラー: {str(e)}")
+        print(f"特徴量抽出エラー: {e}")
         import traceback
 
         traceback.print_exc()
-        raise HTTPException(
-            status_code=500, detail=f"詳細CSV出力中にエラーが発生しました: {str(e)}"
-        )
+        return {"success": False, "error": str(e)}
 
 
-@router.get("/download/{session_id}/predictions")
-async def download_timeseries_predictions(
-    session_id: int, db: Session = Depends(get_db)
+@router.post("/timeseries/analyze")
+async def analyze_timeseries(
+    file: UploadFile = File(...),
+    session_name: str = Form(...),
+    user_id: str = Form(None),
+    target_column: str = Form(...),
+    date_column: str = Form(...),
+    feature_columns: str = Form(None),
+    forecast_periods: int = Form(5),
+    test_size: float = Form(0.2),
 ):
-    """予測結果をCSV形式でダウンロード"""
+    """時系列分析を実行"""
     try:
-        from models import AnalysisSession, CoordinatesData
+        print("=== 時系列分析API開始 ===")
 
-        # セッション情報を取得
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
+        # CSVファイルを読み込み
+        content = await file.read()
+        df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+
+        # 特徴量列を解析
+        feature_list = []
+        if feature_columns:
+            feature_list = [col.strip() for col in feature_columns.split(",")]
+
+        # 分析器を初期化
+        analyzer = SimpleTimeSeriesAnalyzer()
+
+        # 特徴量作成
+        df_features, feature_cols = analyzer._create_features(
+            df, target_column, date_column, feature_list
         )
-        if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
 
-        if session.analysis_type != "timeseries":
-            raise HTTPException(
-                status_code=400, detail="時系列分析のセッションではありません"
+        # データサイズチェック
+        if len(df_features) < 10:
+            return {
+                "success": False,
+                "error": f"データが不足しています: {len(df_features)}行（最低10行必要）",
+            }
+
+        # 特徴量とターゲットを分離
+        X_features = df_features[feature_cols].copy()
+        y_target = df_features[target_column].copy()
+
+        print(f"=== 特徴量データ確認 ===")
+        for col in feature_cols:
+            values = X_features[col]
+            print(
+                f"{col}: mean={values.mean():.4f}, std={values.std():.4f}, var={values.var():.4f}"
             )
 
-        # 予測データを取得
-        predictions = (
-            db.query(CoordinatesData)
-            .filter(
-                CoordinatesData.session_id == session_id,
-                CoordinatesData.point_type == "test",
+        # データ分割
+        split_idx = int(len(X_features) * (1 - test_size))
+        X_train = X_features.iloc[:split_idx]
+        X_test = X_features.iloc[split_idx:]
+        y_train = y_target.iloc[:split_idx]
+        y_test = y_target.iloc[split_idx:]
+
+        print(f"データ分割: 訓練={len(X_train)}行, テスト={len(X_test)}行")
+
+        # モデル訓練
+        if LIGHTGBM_AVAILABLE and len(X_train) > 5:
+            print("=== LightGBMモデル訓練開始 ===")
+
+            # 過学習対策を強化したパラメータ
+            model = lgb.LGBMRegressor(
+                objective="regression",
+                metric="rmse",
+                verbose=-1,
+                random_state=42,
+                n_estimators=50,  # 減少
+                max_depth=3,  # 減少
+                learning_rate=0.05,  # 減少
+                num_leaves=7,  # 大幅減少
+                min_child_samples=10,  # 増加
+                feature_fraction=0.6,  # 減少
+                bagging_fraction=0.7,  # 減少
+                bagging_freq=1,
+                reg_alpha=0.1,  # L1正則化追加
+                reg_lambda=0.1,  # L2正則化追加
+                min_split_gain=0.01,  # 分割時の最小ゲイン
+                subsample_for_bin=200000,
+                class_weight=None,
+                min_child_weight=0.001,
+                subsample_freq=0,
+                colsample_bytree=1.0,
+                reg_sqrt=False,
+                boost_from_average=True,
             )
-            .order_by(CoordinatesData.dimension_4)
+
+            model.fit(X_train, y_train)
+            train_pred = model.predict(X_train)
+            test_pred = model.predict(X_test)
+
+            # 特徴量重要度（gain, split, coverageで確認）
+            importance_gain = model.feature_importances_
+
+            print(f"=== 特徴量重要度詳細 ===")
+            feature_importance = []
+            for i, col in enumerate(feature_cols):
+                importance = float(importance_gain[i])
+                feature_importance.append((col, importance))
+                print(f"{col}: {importance:.6f}")
+
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
+            model_type = "lightgbm"
+
+        else:
+            print("=== 線形回帰モデル訓練開始 ===")
+            model = LinearRegression()
+            model.fit(X_train, y_train)
+            train_pred = model.predict(X_train)
+            test_pred = model.predict(X_test)
+
+            # 特徴量重要度（係数の絶対値）
+            coeffs = np.abs(model.coef_)
+
+            print(f"=== 特徴量重要度詳細 ===")
+            feature_importance = []
+            for i, col in enumerate(feature_cols):
+                importance = float(coeffs[i])
+                feature_importance.append((col, importance))
+                print(f"{col}: {importance:.6f}")
+
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
+            model_type = "linear_regression"
+
+        # 評価指標計算
+        def calculate_metrics(y_true, y_pred):
+            y_true = np.array(y_true)
+            y_pred = np.array(y_pred)
+
+            rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+            mae = float(mean_absolute_error(y_true, y_pred))
+            r2 = float(r2_score(y_true, y_pred))
+
+            # MAPE計算（ゼロ除算対策）
+            mask = y_true != 0
+            if mask.sum() > 0:
+                mape = float(
+                    np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+                )
+            else:
+                mape = 0.0
+
+            return {
+                "rmse": rmse,
+                "mae": mae,
+                "r2": r2,
+                "mape": mape,
+            }
+
+        train_metrics = calculate_metrics(y_train, train_pred)
+        test_metrics = calculate_metrics(y_test, test_pred)
+
+        print(f"=== モデル性能 ===")
+        print(
+            f"訓練 - RMSE: {train_metrics['rmse']:.4f}, R²: {train_metrics['r2']:.4f}"
+        )
+        print(
+            f"テスト - RMSE: {test_metrics['rmse']:.4f}, R²: {test_metrics['r2']:.4f}"
+        )
+
+        # 過学習チェック
+        if train_metrics["r2"] > 0.8 and test_metrics["r2"] < 0.3:
+            print("⚠️ 過学習の可能性があります")
+
+        # 予測データを構築
+        predictions = []
+        for i, (idx, pred, actual) in enumerate(zip(X_test.index, test_pred, y_test)):
+            predictions.append(
+                {
+                    "timestamp": str(idx),
+                    "predicted_value": float(pred),
+                    "actual_value": float(actual),
+                    "residual": float(actual - pred),
+                    "order_index": int(i),
+                }
+            )
+
+        # 実測値データを構築
+        actual_values = []
+        for i, (idx, value) in enumerate(y_train.items()):
+            actual_values.append(
+                {
+                    "timestamp": str(idx),
+                    "value": float(value),
+                    "order_index": int(i),
+                }
+            )
+
+        # レスポンス作成
+        response = {
+            "success": True,
+            "session_id": None,  # データベース保存は後で実装
+            "analysis_type": "timeseries",
+            "data": {
+                "model_type": model_type,
+                "target_column": target_column,
+                "feature_columns": feature_cols,
+                "forecast_periods": int(forecast_periods),
+                "model_metrics": {
+                    "train": train_metrics,
+                    "test": test_metrics,
+                    "r2_score": test_metrics["r2"],
+                    "rmse": test_metrics["rmse"],
+                    "mae": test_metrics["mae"],
+                    "overfitting_risk": (
+                        "high"
+                        if (train_metrics["r2"] > 0.8 and test_metrics["r2"] < 0.3)
+                        else "low"
+                    ),
+                },
+                "feature_importance": feature_importance,
+                "predictions": predictions,
+                "actual_values": actual_values,
+                "future_predictions": [],
+                "data_info": {
+                    "total_samples": int(len(X_features)),
+                    "train_samples": int(len(X_train)),
+                    "test_samples": int(len(X_test)),
+                    "feature_count": int(len(feature_cols)),
+                    "target_column": target_column,
+                    "feature_columns": feature_cols,
+                },
+            },
+            "metadata": {
+                "session_name": session_name,
+                "filename": file.filename,
+                "rows": int(df.shape[0]),
+                "columns": int(df.shape[1]),
+                "target_column": target_column,
+                "feature_columns": feature_cols,
+            },
+        }
+
+        print("=== 時系列分析API処理完了 ===")
+        return response
+
+    except Exception as e:
+        print(f"時系列分析エラー: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/timeseries/sessions")
+async def get_timeseries_sessions(
+    analysis_type: str = "timeseries",
+    user_id: str = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """時系列分析のセッション一覧を取得"""
+    try:
+        query = db.query(AnalysisSession).filter(
+            AnalysisSession.analysis_type == analysis_type
+        )
+
+        if user_id:
+            query = query.filter(AnalysisSession.user_id == user_id)
+
+        sessions = (
+            query.order_by(AnalysisSession.analysis_timestamp.desc())
+            .offset(offset)
+            .limit(limit)
             .all()
         )
 
-        if not predictions:
-            raise HTTPException(status_code=404, detail="予測データが見つかりません")
+        session_list = []
+        for session in sessions:
+            session_data = {
+                "id": int(session.id),
+                "session_name": session.session_name,
+                "analysis_type": session.analysis_type,
+                "original_filename": session.original_filename,
+                "row_count": int(session.row_count) if session.row_count else 0,
+                "column_count": (
+                    int(session.column_count) if session.column_count else 0
+                ),
+                "analysis_timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "user_id": session.user_id,
+            }
 
-        # CSVデータを作成
-        output = io.StringIO()
-        writer = csv.writer(output)
+            if session.analysis_parameters:
+                session_data["parameters"] = session.analysis_parameters
 
-        # ヘッダー
-        writer.writerow(["timestamp", "predicted_value", "actual_value", "residual"])
+            session_list.append(session_data)
 
-        # データ行
-        for pred in predictions:
-            writer.writerow(
-                [
-                    pred.point_name,
-                    pred.dimension_1 if pred.dimension_1 is not None else 0.0,
-                    pred.dimension_3 if pred.dimension_3 is not None else 0.0,
-                    pred.dimension_2 if pred.dimension_2 is not None else 0.0,
-                ]
-            )
+        return {
+            "success": True,
+            "sessions": session_list,
+            "total": int(len(session_list)),
+        }
 
-        output.seek(0)
-
-        # レスポンス作成
-        return StreamingResponse(
-            io.StringIO(output.getvalue()),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=timeseries_predictions_{session_id}.csv"
-            },
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"予測CSV出力エラー: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"予測CSV出力中にエラーが発生しました: {str(e)}",
-        )
-
-
-@router.get("/download/{session_id}/forecast")
-async def download_timeseries_forecast(session_id: int, db: Session = Depends(get_db)):
-    """未来予測をCSV形式でダウンロード"""
-    try:
-        from models import AnalysisSession, CoordinatesData
-
-        # セッション情報を取得
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
-
-        if session.analysis_type != "timeseries":
-            raise HTTPException(
-                status_code=400, detail="時系列分析のセッションではありません"
-            )
-
-        # 未来予測データを取得
-        forecasts = (
-            db.query(CoordinatesData)
-            .filter(
-                CoordinatesData.session_id == session_id,
-                CoordinatesData.point_type == "variable",
-            )
-            .order_by(CoordinatesData.dimension_4)
-            .all()
-        )
-
-        if not forecasts:
-            raise HTTPException(
-                status_code=404, detail="未来予測データが見つかりません"
-            )
-
-        # CSVデータを作成
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        # ヘッダー
-        writer.writerow(["timestamp", "predicted_value"])
-
-        # データ行
-        for forecast in forecasts:
-            writer.writerow(
-                [
-                    forecast.point_name,
-                    forecast.dimension_1 if forecast.dimension_1 is not None else 0.0,
-                ]
-            )
-
-        output.seek(0)
-
-        # レスポンス作成
-        return StreamingResponse(
-            io.StringIO(output.getvalue()),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=timeseries_forecast_{session_id}.csv"
-            },
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"未来予測CSV出力エラー: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"未来予測CSV出力中にエラーが発生しました: {str(e)}",
-        )
-
-
-@router.get("/download/{session_id}/feature_importance")
-async def download_feature_importance(session_id: int, db: Session = Depends(get_db)):
-    """特徴量重要度をCSV形式でダウンロード"""
-    try:
-        from models import AnalysisSession, AnalysisMetadata
-
-        # セッション情報を取得
-        session = (
-            db.query(AnalysisSession).filter(AnalysisSession.id == session_id).first()
-        )
-        if not session:
-            raise HTTPException(status_code=404, detail="セッションが見つかりません")
-
-        if session.analysis_type != "timeseries":
-            raise HTTPException(
-                status_code=400, detail="時系列分析のセッションではありません"
-            )
-
-        # メタデータから特徴量重要度を取得
-        metadata = (
-            db.query(AnalysisMetadata)
-            .filter(
-                AnalysisMetadata.session_id == session_id,
-                AnalysisMetadata.metadata_type == "timeseries_metrics",
-            )
-            .first()
-        )
-
-        if not metadata:
-            raise HTTPException(status_code=404, detail="特徴量重要度が見つかりません")
-
-        feature_importance = metadata.metadata_content.get("feature_importance", [])
-        if not feature_importance:
-            raise HTTPException(status_code=404, detail="特徴量重要度データが空です")
-
-        # CSVデータを作成
-        output = io.StringIO()
-        writer = csv.writer(output)
-
-        # ヘッダー
-        writer.writerow(["feature_name", "importance"])
-
-        # データ行
-        for feature_name, importance in feature_importance:
-            writer.writerow([feature_name, importance])
-
-        output.seek(0)
-
-        # レスポンス作成
-        return StreamingResponse(
-            io.StringIO(output.getvalue()),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename=feature_importance_{session_id}.csv"
-            },
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"特徴量重要度CSV出力エラー: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"特徴量重要度CSV出力中にエラーが発生しました: {str(e)}",
-        )
+        print(f"セッション一覧取得エラー: {e}")
+        return {"success": False, "error": str(e)}

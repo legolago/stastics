@@ -167,6 +167,8 @@ async def root():
         supported_methods.append("regression")
     if routers_status["rfm"]:
         supported_methods.append("rfm")
+    if routers_status["timeseries"]:
+        supported_methods.append("timeseries")
 
     return {
         "message": "多変量解析API",

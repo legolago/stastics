@@ -1,21 +1,18 @@
-from typing import Dict, Any, Optional, List, Tuple
+from fastapi import APIRouter, File, UploadFile, Form, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+from models import (
+    get_db,
+    AnalysisSession,
+    CoordinatesData,
+    AnalysisMetadata,
+    OriginalData,
+)
 import pandas as pd
 import numpy as np
-import matplotlib
-
-matplotlib.use("Agg")  # GUI無効化
-
-import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
-import seaborn as sns
+import io
+import csv
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sqlalchemy.orm import Session
-from .base import BaseAnalyzer
-import warnings
-
-warnings.filterwarnings("ignore")
 
 # LightGBMの条件付きインポート
 try:
@@ -24,1316 +21,590 @@ try:
     LIGHTGBM_AVAILABLE = True
 except ImportError:
     LIGHTGBM_AVAILABLE = False
-    print("Warning: LightGBM not available, using alternative methods")
 
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
-class TimeSeriesAnalyzer(BaseAnalyzer):
-    """時系列分析クラス（LightGBMベース）"""
+router = APIRouter()
 
-    def get_analysis_type(self) -> str:
-        return "timeseries"
 
-    def save_to_database(
-        self,
-        db: Session,
-        session_name: str,
-        description: Optional[str],
-        tags: List[str],
-        user_id: str,
-        file,
-        csv_text: str,
-        df: pd.DataFrame,
-        results: Dict[str, Any],
-        plot_base64: str,
-    ) -> int:
-        try:
-            print("=== 時系列分析データベース保存開始 ===")
+class SimpleTimeSeriesAnalyzer:
+    """簡略化された時系列分析クラス"""
 
-            # まず基本セッションを保存
-            session_id = self._save_session_directly(
-                db,
-                session_name,
-                description,
-                tags,
-                user_id,
-                file,
-                csv_text,
-                df,
-                results,
-                plot_base64,
-            )
+    def _create_features(self, df, target_column, date_column, feature_columns=None):
+        """時系列特徴量を作成"""
+        print("=== 特徴量作成開始 ===")
 
-            print(f"基本セッション保存完了: session_id = {session_id}")
-
-            if session_id and session_id > 0:
-                # 時系列分析特有のデータを追加保存
-                self._save_timeseries_specific_data(db, session_id, results)
-
-                # 座標データを保存
-                self._save_coordinates_data(db, session_id, df, results)
-            else:
-                print(f"❌ セッション保存に失敗: session_id = {session_id}")
-
-            return session_id
-
-        except Exception as e:
-            print(f"❌ 時系列分析データベース保存エラー: {str(e)}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            return 0
-
-    def _save_timeseries_specific_data(
-        self, db: Session, session_id: int, results: Dict[str, Any]
-    ):
-        """時系列分析特有のデータを保存"""
-        try:
-            from models import AnalysisMetadata
-
-            print(f"=== 時系列分析特有データ保存開始 ===")
-            print(f"Session ID: {session_id}")
-
-            # session_idが有効かチェック
-            if not session_id or session_id == 0:
-                print(f"❌ 無効なsession_id: {session_id}")
-                return
-
-            # モデル性能メタデータ
-            if "model_metrics" in results:
-                metrics_metadata = AnalysisMetadata(
-                    session_id=session_id,
-                    metadata_type="timeseries_metrics",
-                    metadata_content={
-                        "metrics": results["model_metrics"],
-                        "feature_importance": results.get("feature_importance", []),
-                        "forecast_parameters": results.get("forecast_parameters", {}),
-                        "model_type": results.get("model_type", "lightgbm"),
-                        "data_info": results.get("data_info", {}),
-                    },
-                )
-                db.add(metrics_metadata)
-
-            # 時系列データ詳細
-            if "timeseries_info" in results:
-                ts_info_metadata = AnalysisMetadata(
-                    session_id=session_id,
-                    metadata_type="timeseries_info",
-                    metadata_content=results["timeseries_info"],
-                )
-                db.add(ts_info_metadata)
-
-            # コミット前にflushでエラーチェック
-            db.flush()
-            db.commit()
-            print(f"✅ 時系列分析特有データ保存完了")
-
-        except Exception as e:
-            print(f"時系列分析特有データ保存エラー: {e}")
-            try:
-                db.rollback()
-                print("データベースをロールバックしました")
-            except Exception as rollback_error:
-                print(f"ロールバックエラー: {rollback_error}")
-
-    def _save_session_directly(
-        self,
-        db: Session,
-        session_name: str,
-        description: Optional[str],
-        tags: List[str],
-        user_id: str,
-        file,
-        csv_text: str,
-        df: pd.DataFrame,
-        results: Dict[str, Any],
-        plot_base64: str,
-    ) -> int:
-        """基底クラスのメソッドがない場合の直接保存（DB互換性対応版）"""
-        try:
-            from models import AnalysisSession, VisualizationData
-
-            # 🆕 既存のデータベーススキーマに合わせてインポート
-            from sqlalchemy import text
-
-            print(f"📊 セッション直接保存開始")
-
-            # セッション基本情報を保存（analysis_typeを明示的に指定）
-            session = AnalysisSession(
-                session_name=session_name,
-                description=description,
-                analysis_type="timeseries",  # 🆕 明示的に指定
-                original_filename=file.filename,
-                user_id=user_id,
-                row_count=df.shape[0],
-                column_count=df.shape[1],
-                # 時系列分析特有のメタデータ
-                dimensions_count=1,  # 予測値
-                dimension_1_contribution=(
-                    results.get("model_metrics", {}).get("r2_score", 0)
-                    if results.get("model_metrics")
-                    else 0
-                ),
-            )
-
-            db.add(session)
-            db.flush()  # IDを取得するためflush
-            session_id = session.id
-            print(f"✅ セッション保存完了: session_id = {session_id}")
-
-            # タグを保存（既存のカラム名'tag'を使用）
-            if tags and session_id:
-                try:
-                    for tag in tags:
-                        if tag.strip():
-                            # 🆕 生のSQLを使用して既存スキーマに対応
-                            db.execute(
-                                text(
-                                    "INSERT INTO session_tags (session_id, tag, created_at) VALUES (:session_id, :tag, :created_at)"
-                                ),
-                                {
-                                    "session_id": session_id,
-                                    "tag": tag.strip(),
-                                    "created_at": datetime.utcnow(),
-                                },
-                            )
-                    print(f"✅ タグ保存完了: {len(tags)}件")
-                except Exception as tag_error:
-                    print(f"⚠️ タグ保存エラー（スキップ）: {tag_error}")
-                    # タグ保存に失敗してもセッションは保存する
-
-            # プロット画像を保存
-            if plot_base64:
-                try:
-                    visualization = VisualizationData(
-                        session_id=session_id,
-                        image_base64=plot_base64,
-                        image_size=len(plot_base64),
-                        width=1400,
-                        height=1100,
-                    )
-                    db.add(visualization)
-                    db.flush()
-                    print("✅ 可視化データ保存完了")
-                except Exception as viz_error:
-                    print(f"⚠️ 可視化データ保存エラー（スキップ）: {viz_error}")
-
-            db.commit()
-            print(f"✅ 全体のコミット完了: session_id = {session_id}")
-            return session_id
-
-        except Exception as e:
-            print(f"❌ 直接保存エラー: {str(e)}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            try:
-                db.rollback()
-                print("データベースをロールバックしました")
-            except Exception as rollback_error:
-                print(f"ロールバックエラー: {rollback_error}")
-            return 0
-
-    def _save_coordinates_data(
-        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
-    ):
-        """時系列分析の座標データを保存（実測値・予測値・残差）"""
-        try:
-            from models import CoordinatesData
-
-            print(f"=== 時系列分析座標データ保存開始 ===")
-            print(f"Session ID: {session_id}")
-
-            # session_idが有効かチェック
-            if not session_id or session_id == 0:
-                print(f"❌ 無効なsession_id: {session_id}")
-                return
-
-            # 実測値を保存（訓練データとして）
-            actual_values = results.get("actual_values", [])
-            if actual_values:
-                print(f"実測値データ保存: {len(actual_values)}件")
-                for i, (timestamp, value) in enumerate(actual_values):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(timestamp),
-                        point_type="train",  # 訓練データとして保存
-                        dimension_1=float(value),
-                        dimension_2=0.0,  # 実測値なので予測誤差は0
-                        dimension_4=float(i),  # 時系列の順序
-                    )
-                    db.add(coord_data)
-
-            # 予測値を保存（テストデータとして）
-            predictions = results.get("predictions", [])
-            if predictions:
-                print(f"予測値データ保存: {len(predictions)}件")
-                for i, (timestamp, pred_value, actual_value) in enumerate(predictions):
-                    residual = (
-                        actual_value - pred_value if actual_value is not None else 0.0
-                    )
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(timestamp),
-                        point_type="test",  # テストデータとして保存
-                        dimension_1=float(pred_value),
-                        dimension_2=float(residual),
-                        dimension_3=(
-                            float(actual_value) if actual_value is not None else None
-                        ),
-                        dimension_4=float(i),  # 時系列の順序
-                    )
-                    db.add(coord_data)
-
-            # 未来予測値を保存（変数として）
-            future_predictions = results.get("future_predictions", [])
-            if future_predictions:
-                print(f"未来予測値データ保存: {len(future_predictions)}件")
-                for i, (timestamp, pred_value) in enumerate(future_predictions):
-                    coord_data = CoordinatesData(
-                        session_id=session_id,
-                        point_name=str(timestamp),
-                        point_type="variable",  # 変数として保存
-                        dimension_1=float(pred_value),
-                        dimension_2=0.0,  # 未来なので残差は不明
-                        dimension_4=float(len(predictions) + i),  # 時系列の順序
-                    )
-                    db.add(coord_data)
-
-            # コミット前にflushでエラーチェック
-            db.flush()
-            db.commit()
-            print(f"✅ 時系列分析座標データ保存完了")
-
-        except Exception as e:
-            print(f"❌ 時系列分析座標データ保存エラー: {e}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            try:
-                db.rollback()
-                print("データベースをロールバックしました")
-            except Exception as rollback_error:
-                print(f"ロールバックエラー: {rollback_error}")
-
-    def analyze(
-        self,
-        df: pd.DataFrame,
-        target_column: str,
-        date_column: Optional[str] = None,
-        feature_columns: Optional[List[str]] = None,
-        forecast_periods: int = 30,
-        test_size: float = 0.2,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """時系列分析を実行"""
-        try:
-            print(f"=== 時系列分析開始 ===")
-            print(f"入力データ:\n{df}")
-            print(f"データ形状: {df.shape}")
-            print(f"目的変数: {target_column}, 日付列: {date_column}")
-            print(f"予測期間: {forecast_periods}, テストサイズ: {test_size}")
-
-            # データの検証と前処理
-            df_processed = self._preprocess_timeseries_data(
-                df, target_column, date_column, feature_columns
-            )
-            print(f"前処理後データ:\n{df_processed}")
-
-            # 時系列分析の計算
-            results = self._compute_timeseries_analysis(
-                df_processed, target_column, forecast_periods, test_size, **kwargs
-            )
-
-            print(f"分析結果: {list(results.keys())}")
-            return results
-
-        except Exception as e:
-            print(f"時系列分析エラー: {str(e)}")
-            import traceback
-
-            print(f"トレースバック:\n{traceback.format_exc()}")
-            raise
-
-    def _preprocess_timeseries_data(
-        self,
-        df: pd.DataFrame,
-        target_column: str,
-        date_column: Optional[str],
-        feature_columns: Optional[List[str]],
-    ) -> pd.DataFrame:
-        """時系列分析用のデータ前処理（修正版）"""
-        df_clean = df.copy()
-
-        # 日付列の処理
-        if date_column and date_column in df_clean.columns:
-            try:
-                df_clean[date_column] = pd.to_datetime(df_clean[date_column])
-                df_clean = df_clean.sort_values(date_column)
-                df_clean.set_index(date_column, inplace=True)
-                print(f"✅ 日付列 '{date_column}' をインデックスに設定")
-            except Exception as e:
-                print(f"⚠️ 日付列の処理でエラー: {e}")
-                print("インデックスをそのまま使用します")
-        else:
-            print("日付列が指定されていません。インデックスを時系列として使用します。")
-
-        # 目的変数の存在確認
-        if target_column not in df_clean.columns:
-            raise ValueError(f"目的変数 '{target_column}' が見つかりません")
-
-        # 数値データのみを抽出
-        numeric_columns = df_clean.select_dtypes(include=[np.number]).columns.tolist()
-
-        if target_column not in numeric_columns:
-            raise ValueError(f"目的変数 '{target_column}' は数値型である必要があります")
-
-        # 🆕 特徴量の選択（数値列のみ）
-        if feature_columns:
-            available_features = [
-                col
-                for col in feature_columns
-                if col in numeric_columns and col != target_column
-            ]
-            print(f"🔍 指定された特徴量のうち利用可能: {available_features}")
-
-            # 利用できない特徴量があった場合の警告
-            unavailable_features = [
-                col
-                for col in feature_columns
-                if col not in numeric_columns or col not in df_clean.columns
-            ]
-            if unavailable_features:
-                print(f"⚠️ 利用できない特徴量: {unavailable_features}")
-        else:
-            available_features = [
-                col for col in numeric_columns if col != target_column
-            ]
-            print(f"🔍 自動選択された特徴量: {available_features}")
-
-        # 欠損値の処理
-        df_clean = df_clean.dropna(subset=[target_column])
-        if df_clean.empty:
-            raise ValueError("目的変数の欠損値を除去した結果、データが空になりました")
-
-        print(f"前処理完了: {df.shape} -> {df_clean.shape}")
-        print(f"使用する特徴量: {available_features}")
-
-        # 🆕 利用可能な特徴量リストを保存（後で使用するため）
-        df_clean._available_features = available_features
-
-        return df_clean
-
-    def _compute_timeseries_analysis(
-        self,
-        df: pd.DataFrame,
-        target_column: str,
-        forecast_periods: int,
-        test_size: float,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """時系列分析の計算（修正版）"""
-        try:
-            # 🆕 前処理で保存された特徴量リストを取得
-            feature_columns = getattr(df, "_available_features", [])
-
-            # 時系列特徴量の作成
-            df_features = self._create_time_features(df, target_column, feature_columns)
-
-            # 🆕 LightGBM用のデータ型確認
-            print(f"🔍 LightGBM投入前のデータ型確認:")
-            problematic_columns = []
-            for col in df_features.columns:
-                dtype = df_features[col].dtype
-                print(f"  {col}: {dtype}")
-
-                # LightGBMが受け付けないデータ型をチェック
-                if dtype == "object" or dtype.name.startswith("datetime"):
-                    if col != target_column:  # 目的変数以外
-                        problematic_columns.append(col)
-
-            # 問題のある列を削除
-            if problematic_columns:
-                print(f"🗑️ LightGBM非対応列を削除: {problematic_columns}")
-                df_features = df_features.drop(columns=problematic_columns)
-
-            # データ分割
-            split_index = int(len(df_features) * (1 - test_size))
-            train_data = df_features.iloc[:split_index]
-            test_data = df_features.iloc[split_index:]
-
-            print(f"📊 データ分割: train={len(train_data)}, test={len(test_data)}")
-            print(f"📊 最終特徴量: {list(df_features.columns)}")
-
-            # モデル学習
-            if LIGHTGBM_AVAILABLE:
-                results = self._train_lightgbm_model(
-                    train_data, test_data, target_column
-                )
-            else:
-                results = self._train_alternative_model(
-                    train_data, test_data, target_column
-                )
-
-            # 未来予測
-            future_predictions = self._generate_future_predictions(
-                df_features, results["model"], target_column, forecast_periods
-            )
-
-            # 結果の統合
-            results.update(
-                {
-                    "forecast_periods": forecast_periods,
-                    "test_size": test_size,
-                    "data_info": {
-                        "total_samples": len(df_features),
-                        "train_samples": len(train_data),
-                        "test_samples": len(test_data),
-                        "feature_count": len(df_features.columns) - 1,  # 目的変数を除く
-                        "target_column": target_column,
-                        "feature_columns": [
-                            col for col in df_features.columns if col != target_column
-                        ],
-                    },
-                    "future_predictions": future_predictions,
-                    "timeseries_info": {
-                        "start_date": (
-                            str(df.index[0])
-                            if hasattr(df.index[0], "strftime")
-                            else str(df.index[0])
-                        ),
-                        "end_date": (
-                            str(df.index[-1])
-                            if hasattr(df.index[-1], "strftime")
-                            else str(df.index[-1])
-                        ),
-                        "frequency": self._infer_frequency(df.index),
-                        "trend": self._analyze_trend(df[target_column]),
-                    },
-                }
-            )
-
-            return results
-
-        except Exception as e:
-            print(f"時系列分析計算エラー: {str(e)}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            raise
-
-    def _create_time_features(
-        self, df: pd.DataFrame, target_column: str, feature_columns: List[str]
-    ) -> pd.DataFrame:
-        """時系列特徴量を作成（データ型修正版）"""
         df_features = df.copy()
 
-        # ラグ特徴量
-        for lag in [1, 3, 7, 14]:
-            if len(df) > lag:
-                df_features[f"{target_column}_lag_{lag}"] = df_features[
-                    target_column
-                ].shift(lag)
+        # 日付列を datetime に変換
+        if date_column in df_features.columns:
+            df_features[date_column] = pd.to_datetime(df_features[date_column])
+            df_features = df_features.sort_values(date_column)
+            df_features = df_features.reset_index(drop=True)
 
-        # 移動平均特徴量
-        for window in [3, 7, 14]:
-            if len(df) > window:
-                df_features[f"{target_column}_ma_{window}"] = (
-                    df_features[target_column].rolling(window=window).mean()
+        # 元の特徴量を追加
+        feature_cols = []
+        if feature_columns:
+            for col in feature_columns:
+                if col in df_features.columns and col != target_column:
+                    feature_cols.append(col)
+                    print(f"元の特徴量を追加: {col}")
+
+        # ラグ特徴量を作成
+        for lag in [1, 3, 7]:
+            if len(df_features) > lag:
+                lag_col = f"{target_column}_lag_{lag}"
+                df_features[lag_col] = df_features[target_column].shift(lag)
+                feature_cols.append(lag_col)
+                print(f"ラグ特徴量作成: {lag_col}")
+
+        # 移動平均特徴量を作成
+        for window in [3, 7]:
+            if len(df_features) >= window:
+                ma_col = f"{target_column}_ma_{window}"
+                df_features[ma_col] = (
+                    df_features[target_column]
+                    .rolling(window=window, min_periods=1)
+                    .mean()
                 )
+                feature_cols.append(ma_col)
+                print(f"移動平均特徴量作成: {ma_col}")
 
-        # 時間ベースの特徴量（日付インデックスがある場合）
-        if hasattr(df.index, "month"):
-            df_features["month"] = df.index.month
-            df_features["quarter"] = df.index.quarter
-            df_features["day_of_week"] = df.index.dayofweek
-            df_features["day_of_year"] = df.index.dayofyear
+        # 差分特徴量を追加（トレンドキャプチャのため）
+        if len(df_features) > 1:
+            diff_col = f"{target_column}_diff_1"
+            df_features[diff_col] = df_features[target_column].diff()
+            feature_cols.append(diff_col)
+            print(f"差分特徴量作成: {diff_col}")
 
-        # 🆕 既存の数値特徴量を追加（日付列は除外）
-        for col in feature_columns:
-            if col in df.columns:
-                # 🆕 数値型のみを含める
-                if df[col].dtype in ["int64", "float64", "int32", "float32"]:
-                    df_features[col] = df[col]
-                else:
-                    print(f"⚠️ 非数値列をスキップ: {col} (dtype: {df[col].dtype})")
+        # 日付特徴量を作成（分散が0でない場合のみ）
+        if date_column in df_features.columns:
+            month_vals = df_features[date_column].dt.month
+            quarter_vals = df_features[date_column].dt.quarter
+            dow_vals = df_features[date_column].dt.dayofweek
 
-        # 🆕 元の日付列を削除（もし含まれている場合）
-        date_columns_to_remove = []
-        for col in df_features.columns:
-            if df_features[col].dtype == "object" or df_features[
-                col
-            ].dtype.name.startswith("datetime"):
-                if col != target_column:  # 目的変数は保持
-                    date_columns_to_remove.append(col)
+            # 分散チェック
+            if month_vals.var() > 0:
+                df_features["month"] = month_vals
+                feature_cols.append("month")
+                print(f"日付特徴量追加: month (分散={month_vals.var():.4f})")
+            else:
+                print("月特徴量をスキップ: 分散が0")
 
-        if date_columns_to_remove:
-            print(f"🗑️ 日付/文字列列を削除: {date_columns_to_remove}")
-            df_features = df_features.drop(columns=date_columns_to_remove)
+            if quarter_vals.var() > 0:
+                df_features["quarter"] = quarter_vals
+                feature_cols.append("quarter")
+                print(f"日付特徴量追加: quarter (分散={quarter_vals.var():.4f})")
+            else:
+                print("四半期特徴量をスキップ: 分散が0")
 
-        # 🆕 データ型の最終確認と変換
-        for col in df_features.columns:
-            if col != target_column:  # 目的変数は除く
-                if df_features[col].dtype == "object":
-                    try:
-                        # 文字列を数値に変換を試行
-                        df_features[col] = pd.to_numeric(
-                            df_features[col], errors="coerce"
-                        )
-                        print(f"✅ 列 {col} を数値に変換")
-                    except:
-                        # 変換できない場合は削除
-                        print(f"⚠️ 列 {col} を削除（数値変換不可）")
-                        df_features = df_features.drop(columns=[col])
+            if dow_vals.var() > 0:
+                df_features["day_of_week"] = dow_vals
+                feature_cols.append("day_of_week")
+                print(f"日付特徴量追加: day_of_week (分散={dow_vals.var():.4f})")
+            else:
+                print("曜日特徴量をスキップ: 分散が0")
 
-        # 欠損値を除去
+        # 日付列とターゲット列を特徴量から除外
+        feature_cols = [
+            col for col in feature_cols if col != date_column and col != target_column
+        ]
+
+        # 存在しない列を除外
+        feature_cols = [col for col in feature_cols if col in df_features.columns]
+
+        print(f"最終的な特徴量: {feature_cols}")
+
+        # NaN値を削除
+        initial_rows = len(df_features)
+        df_features = df_features.dropna()
+        final_rows = len(df_features)
+        print(f"NaN削除後: {initial_rows} -> {final_rows} 行")
+
+        # 数値型に変換
+        for col in feature_cols:
+            if col in df_features.columns:
+                df_features[col] = pd.to_numeric(df_features[col], errors="coerce")
+
         df_features = df_features.dropna()
 
-        print(f"🔍 最終的な特徴量データ型:")
-        for col in df_features.columns:
-            print(f"  {col}: {df_features[col].dtype}")
+        # 特徴量の分散をチェック（より緩い閾値に変更）
+        print("=== 特徴量の分散チェック ===")
+        filtered_features = []
+        for col in feature_cols:
+            if col in df_features.columns:
+                variance = df_features[col].var()
+                mean_val = df_features[col].mean()
 
-        return df_features
+                # 分散の閾値を緩和（1e-12未満のみ除外）
+                if variance > 1e-12:
+                    filtered_features.append(col)
+                    print(f"{col}: mean={mean_val:.4f}, var={variance:.8f} ✓")
+                else:
+                    print(
+                        f"{col}: mean={mean_val:.4f}, var={variance:.8f} ✗ (分散が小さすぎるため除外)"
+                    )
 
-    def _train_lightgbm_model(
-        self, train_data: pd.DataFrame, test_data: pd.DataFrame, target_column: str
-    ) -> Dict[str, Any]:
-        """LightGBMモデルの学習"""
-        # 特徴量とターゲットの分離
-        X_train = train_data.drop(columns=[target_column])
-        y_train = train_data[target_column]
-        X_test = test_data.drop(columns=[target_column])
-        y_test = test_data[target_column]
+        feature_cols = filtered_features
+        print(f"分散フィルタ後の特徴量: {feature_cols}")
+        print(f"特徴量作成完了: {len(feature_cols)}個の特徴量, {len(df_features)}行")
+        return df_features, feature_cols
 
-        # LightGBMデータセットの作成
-        train_dataset = lgb.Dataset(X_train, label=y_train)
-        valid_dataset = lgb.Dataset(X_test, label=y_test, reference=train_dataset)
 
-        # パラメータ設定
-        params = {
-            "objective": "regression",
-            "metric": "rmse",
-            "boosting_type": "gbdt",
-            "num_leaves": 31,
-            "learning_rate": 0.05,
-            "feature_fraction": 0.9,
-            "bagging_fraction": 0.8,
-            "bagging_freq": 5,
-            "verbose": -1,
-        }
+@router.post("/timeseries/features")
+async def extract_features_only(
+    file: UploadFile = File(...),
+    target_column: str = Form(...),
+    date_column: str = Form(...),
+    feature_columns: str = Form(None),
+):
+    """特徴量のみを抽出して返す（モデル訓練なし）"""
+    try:
+        print("=== 特徴量抽出API開始 ===")
 
-        # モデル学習
-        model = lgb.train(
-            params,
-            train_dataset,
-            valid_sets=[valid_dataset],
-            num_boost_round=1000,
-            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)],
+        # CSVファイルを読み込み
+        content = await file.read()
+        df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+
+        # 元の特徴量列を解析
+        original_features = []
+        if feature_columns:
+            original_features = [col.strip() for col in feature_columns.split(",")]
+
+        # 時系列分析器を初期化
+        analyzer = SimpleTimeSeriesAnalyzer()
+
+        # 特徴量を作成
+        df_features, feature_cols = analyzer._create_features(
+            df, target_column, date_column, original_features
         )
 
-        # 予測
-        y_pred_train = model.predict(X_train)
-        y_pred_test = model.predict(X_test)
-
-        # 評価指標の計算
-        train_metrics = self._calculate_metrics(y_train, y_pred_train)
-        test_metrics = self._calculate_metrics(y_test, y_pred_test)
-
-        # 特徴量重要度
-        feature_importance = list(
-            zip(X_train.columns, model.feature_importance(importance_type="gain"))
-        )
-        feature_importance.sort(key=lambda x: x[1], reverse=True)
-
-        return {
-            "model": model,
-            "model_type": "lightgbm",
-            "model_metrics": {
-                "train": train_metrics,
-                "test": test_metrics,
-                "r2_score": test_metrics["r2"],
-                "rmse": test_metrics["rmse"],
-                "mae": test_metrics["mae"],
-            },
-            "feature_importance": feature_importance,
-            "predictions": [
-                (str(idx), pred, actual)
-                for idx, pred, actual in zip(test_data.index, y_pred_test, y_test)
-            ],
-            "actual_values": [
-                (str(idx), val) for idx, val in zip(train_data.index, y_train)
-            ],
-        }
-
-    def _train_alternative_model(
-        self, train_data: pd.DataFrame, test_data: pd.DataFrame, target_column: str
-    ) -> Dict[str, Any]:
-        """LightGBMが利用できない場合の代替モデル（線形回帰）"""
-        from sklearn.linear_model import LinearRegression
-
-        # 特徴量とターゲットの分離
-        X_train = train_data.drop(columns=[target_column])
-        y_train = train_data[target_column]
-        X_test = test_data.drop(columns=[target_column])
-        y_test = test_data[target_column]
-
-        # モデル学習
-        model = LinearRegression()
-        model.fit(X_train, y_train)
-
-        # 予測
-        y_pred_train = model.predict(X_train)
-        y_pred_test = model.predict(X_test)
-
-        # 評価指標の計算
-        train_metrics = self._calculate_metrics(y_train, y_pred_train)
-        test_metrics = self._calculate_metrics(y_test, y_pred_test)
-
-        # 特徴量重要度（係数の絶対値）
-        feature_importance = list(zip(X_train.columns, np.abs(model.coef_)))
-        feature_importance.sort(key=lambda x: x[1], reverse=True)
-
-        return {
-            "model": model,
-            "model_type": "linear_regression",
-            "model_metrics": {
-                "train": train_metrics,
-                "test": test_metrics,
-                "r2_score": test_metrics["r2"],
-                "rmse": test_metrics["rmse"],
-                "mae": test_metrics["mae"],
-            },
-            "feature_importance": feature_importance,
-            "predictions": [
-                (str(idx), pred, actual)
-                for idx, pred, actual in zip(test_data.index, y_pred_test, y_test)
-            ],
-            "actual_values": [
-                (str(idx), val) for idx, val in zip(train_data.index, y_train)
-            ],
-        }
-
-    def _calculate_metrics(
-        self, y_true: np.ndarray, y_pred: np.ndarray
-    ) -> Dict[str, float]:
-        """評価指標を計算"""
-        return {
-            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-            "mae": float(mean_absolute_error(y_true, y_pred)),
-            "r2": float(r2_score(y_true, y_pred)),
-            "mape": (
-                float(np.mean(np.abs((y_true - y_pred) / y_true)) * 100)
-                if np.all(y_true != 0)
-                else 0.0
-            ),
-        }
-
-    def _generate_future_predictions(
-        self, df: pd.DataFrame, model, target_column: str, forecast_periods: int
-    ) -> List[Tuple[str, float]]:
-        """未来予測を生成"""
-        future_predictions = []
-
-        try:
-            # 最新のデータを使用して予測
-            last_data = df.iloc[-1:].drop(columns=[target_column])
-
-            # 日付インデックスの処理
-            if hasattr(df.index, "freq") and df.index.freq is not None:
-                freq = df.index.freq
-            else:
-                freq = pd.infer_freq(df.index) or "D"
-
-            last_date = df.index[-1]
-
-            for i in range(1, forecast_periods + 1):
-                # 未来の日付を生成
-                if hasattr(last_date, "strftime"):
-                    future_date = last_date + pd.Timedelta(days=i)
-                else:
-                    future_date = len(df) + i
-
-                # 特徴量を更新（簡単な例）
-                if LIGHTGBM_AVAILABLE and hasattr(model, "predict"):
-                    pred_value = model.predict(last_data)[0]
-                else:
-                    pred_value = model.predict(last_data)[0]
-
-                future_predictions.append((str(future_date), float(pred_value)))
-
-                # 次の予測のためにデータを更新（ラグ特徴量など）
-                # 簡略化のため、同じ特徴量を使用
-
-        except Exception as e:
-            print(f"未来予測生成エラー: {e}")
-            # エラーの場合は空のリストを返す
-
-        return future_predictions
-
-    def _infer_frequency(self, index) -> str:
-        """時系列の頻度を推定"""
-        try:
-            if hasattr(index, "freq") and index.freq:
-                return str(index.freq)
-            return pd.infer_freq(index) or "Unknown"
-        except:
-            return "Unknown"
-
-    def _analyze_trend(self, series: pd.Series) -> str:
-        """トレンドを分析"""
-        try:
-            # 線形回帰でトレンドを判定
-            x = np.arange(len(series))
-            slope = np.polyfit(x, series.values, 1)[0]
-
-            if slope > 0.01:
-                return "上昇トレンド"
-            elif slope < -0.01:
-                return "下降トレンド"
-            else:
-                return "横ばい"
-        except:
-            return "不明"
-
-    def create_plot(self, results: Dict[str, Any], df: pd.DataFrame) -> str:
-        """時系列分析の可視化を作成"""
-        try:
-            print("=== プロット作成開始 ===")
-
-            # 日本語フォント設定
-            self.setup_japanese_font()
-
-            # データ準備
-            model_metrics = results["model_metrics"]
-            feature_importance = results["feature_importance"]
-            predictions = results["predictions"]
-            actual_values = results["actual_values"]
-            future_predictions = results.get("future_predictions", [])
-
-            # 図のサイズと配置
-            fig = plt.figure(figsize=(16, 12))
-            fig.patch.set_facecolor("white")
-
-            # 1. 時系列プロット（実測値・予測値・未来予測）
-            ax1 = plt.subplot(2, 3, 1)
-
-            # 実測値
-            if actual_values:
-                dates_actual = [
-                    pd.to_datetime(x[0]) if isinstance(x[0], str) else x[0]
-                    for x in actual_values
-                ]
-                values_actual = [x[1] for x in actual_values]
-                plt.plot(dates_actual, values_actual, "b-", label="実測値", linewidth=2)
-
-            # 予測値
-            if predictions:
-                dates_pred = [
-                    pd.to_datetime(x[0]) if isinstance(x[0], str) else x[0]
-                    for x in predictions
-                ]
-                values_pred = [x[1] for x in predictions]
-                plt.plot(dates_pred, values_pred, "r--", label="予測値", linewidth=2)
-
-            # 未来予測
-            if future_predictions:
-                dates_future = [
-                    pd.to_datetime(x[0]) if isinstance(x[0], str) else x[0]
-                    for x in future_predictions
-                ]
-                values_future = [x[1] for x in future_predictions]
-                plt.plot(
-                    dates_future, values_future, "g:", label="未来予測", linewidth=2
-                )
-
-            plt.xlabel("時間")
-            plt.ylabel("値")
-            plt.title("時系列予測結果")
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.xticks(rotation=45)
-
-            # 2. 予測精度のプロット
-            ax2 = plt.subplot(2, 3, 2)
-            if predictions:
-                actual_test = [x[2] for x in predictions]
-                pred_test = [x[1] for x in predictions]
-                plt.scatter(actual_test, pred_test, alpha=0.6)
-
-                # 対角線
-                min_val = min(min(actual_test), min(pred_test))
-                max_val = max(max(actual_test), max(pred_test))
-                plt.plot([min_val, max_val], [min_val, max_val], "r--", alpha=0.8)
-
-                plt.xlabel("実測値")
-                plt.ylabel("予測値")
-                plt.title(f'予測精度\nR² = {model_metrics["r2_score"]:.3f}')
-                plt.grid(True, alpha=0.3)
-
-            # 3. 残差プロット
-            ax3 = plt.subplot(2, 3, 3)
-            if predictions:
-                residuals = [x[2] - x[1] for x in predictions]
-                pred_values = [x[1] for x in predictions]
-                plt.scatter(pred_values, residuals, alpha=0.6)
-                plt.axhline(y=0, color="r", linestyle="--", alpha=0.8)
-                plt.xlabel("予測値")
-                plt.ylabel("残差")
-                plt.title("残差プロット")
-                plt.grid(True, alpha=0.3)
-
-            # 4. 特徴量重要度
-            ax4 = plt.subplot(2, 3, 4)
-            if feature_importance:
-                top_features = feature_importance[:10]  # 上位10個
-                feature_names = [x[0] for x in top_features]
-                importance_values = [x[1] for x in top_features]
-
-                y_pos = np.arange(len(feature_names))
-                plt.barh(y_pos, importance_values, alpha=0.7)
-                plt.yticks(y_pos, feature_names)
-                plt.xlabel("重要度")
-                plt.title("特徴量重要度")
-                plt.gca().invert_yaxis()
-
-            # 5. 評価指標
-            ax5 = plt.subplot(2, 3, 5)
-            metrics_names = ["RMSE", "MAE", "R²", "MAPE"]
-            test_metrics = model_metrics["test"]
-            metrics_values = [
-                test_metrics["rmse"],
-                test_metrics["mae"],
-                test_metrics["r2"],
-                test_metrics.get("mape", 0),
-            ]
-
-            bars = plt.bar(
-                metrics_names,
-                metrics_values,
-                alpha=0.7,
-                color=["skyblue", "lightgreen", "orange", "pink"],
-            )
-            plt.ylabel("値")
-            plt.title("モデル評価指標")
-            plt.xticks(rotation=45)
-
-            # 値をバーの上に表示
-            for bar, value in zip(bars, metrics_values):
-                plt.text(
-                    bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.01,
-                    f"{value:.3f}",
-                    ha="center",
-                    va="bottom",
-                )
-
-            # 6. データ情報とサマリー
-            ax6 = plt.subplot(2, 3, 6)
-            plt.axis("off")
-
-            data_info = results.get("data_info", {})
-            timeseries_info = results.get("timeseries_info", {})
-
-            info_text = f"""
-データ情報:
-• 総サンプル数: {data_info.get('total_samples', 0)}
-• 訓練データ: {data_info.get('train_samples', 0)}
-• テストデータ: {data_info.get('test_samples', 0)}
-• 特徴量数: {data_info.get('feature_count', 0)}
-
-時系列情報:
-• 開始日: {timeseries_info.get('start_date', 'N/A')}
-• 終了日: {timeseries_info.get('end_date', 'N/A')}
-• 頻度: {timeseries_info.get('frequency', 'N/A')}
-• トレンド: {timeseries_info.get('trend', 'N/A')}
-
-モデル性能:
-• R²スコア: {model_metrics['r2_score']:.3f}
-• RMSE: {model_metrics['rmse']:.3f}
-• MAE: {model_metrics['mae']:.3f}
-• モデル: {results.get('model_type', 'N/A')}
-            """
-
-            plt.text(
-                0.1,
-                0.9,
-                info_text,
-                fontsize=10,
-                verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.5),
-            )
-
-            # 全体のタイトル
-            model_type = results.get("model_type", "unknown")
-            target_col = data_info.get("target_column", "unknown")
-
-            fig.suptitle(
-                f"時系列分析結果 - {model_type.upper()}\n"
-                f"目的変数: {target_col}, "
-                f"R² = {model_metrics['r2_score']:.3f}, "
-                f"予測期間: {results.get('forecast_periods', 0)}期間",
-                fontsize=14,
-                y=0.98,
-            )
-
-            plt.tight_layout()
-            plt.subplots_adjust(top=0.92)
-
-            # Base64エンコード
-            plot_base64 = self.save_plot_as_base64(fig)
-            print(f"プロット作成完了")
-            return plot_base64
-
-        except Exception as e:
-            print(f"プロット作成エラー: {str(e)}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            return ""
-
-    def create_response(
-        self,
-        results: Dict[str, Any],
-        df: pd.DataFrame,
-        session_id: int,
-        session_name: str,
-        file,
-        plot_base64: str,
-    ) -> Dict[str, Any]:
-        """レスポンスデータを作成"""
-        try:
-            predictions = results["predictions"]
-            actual_values = results["actual_values"]
-            future_predictions = results.get("future_predictions", [])
-
-            # 予測データを新形式で作成
-            prediction_data = []
-            for i, (timestamp, pred_value, actual_value) in enumerate(predictions):
-                prediction_data.append(
-                    {
-                        "timestamp": str(timestamp),
-                        "predicted_value": float(pred_value),
-                        "actual_value": float(actual_value),
-                        "residual": float(actual_value - pred_value),
-                        "order_index": i,
-                    }
-                )
-
-            # 実測データを新形式で作成
-            actual_data = []
-            for i, (timestamp, value) in enumerate(actual_values):
-                actual_data.append(
-                    {
-                        "timestamp": str(timestamp),
-                        "value": float(value),
-                        "order_index": i,
-                    }
-                )
-
-            # 未来予測データを新形式で作成
-            forecast_data = []
-            for i, (timestamp, pred_value) in enumerate(future_predictions):
-                forecast_data.append(
-                    {
-                        "timestamp": str(timestamp),
-                        "predicted_value": float(pred_value),
-                        "order_index": len(predictions) + i,
-                    }
-                )
-
-            return {
-                "success": True,
-                "session_id": session_id,
-                "analysis_type": self.get_analysis_type(),
-                "data": {
-                    "model_type": results["model_type"],
-                    "target_column": results["data_info"]["target_column"],
-                    "feature_columns": results["data_info"]["feature_columns"],
-                    "forecast_periods": results["forecast_periods"],
-                    # モデル性能
-                    "model_metrics": results["model_metrics"],
-                    "feature_importance": results["feature_importance"],
-                    # 予測結果
-                    "predictions": prediction_data,
-                    "actual_values": actual_data,
-                    "future_predictions": forecast_data,
-                    # 時系列情報
-                    "timeseries_info": results["timeseries_info"],
-                    "data_info": results["data_info"],
-                    # プロット画像
-                    "plot_image": plot_base64,
-                    # 従来互換性のための座標形式
-                    "coordinates": {
-                        "actual": [
-                            {
-                                "timestamp": str(timestamp),
-                                "value": float(value),
-                            }
-                            for timestamp, value in actual_values
-                        ],
-                        "predictions": [
-                            {
-                                "timestamp": str(timestamp),
-                                "predicted": float(pred_value),
-                                "actual": float(actual_value),
-                                "residual": float(actual_value - pred_value),
-                            }
-                            for timestamp, pred_value, actual_value in predictions
-                        ],
-                        "forecast": [
-                            {
-                                "timestamp": str(timestamp),
-                                "predicted": float(pred_value),
-                            }
-                            for timestamp, pred_value in future_predictions
-                        ],
-                    },
-                },
-                "metadata": {
-                    "session_name": session_name,
-                    "filename": file.filename,
-                    "rows": df.shape[0],
-                    "columns": df.shape[1],
-                    "target_column": results["data_info"]["target_column"],
-                    "feature_columns": results["data_info"]["feature_columns"],
-                },
-            }
-
-        except Exception as e:
-            print(f"❌ レスポンス作成エラー: {e}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            raise
-
-    def get_session_detail(self, db: Session, session_id: int) -> Dict[str, Any]:
-        """時系列分析セッション詳細を取得"""
-        try:
-            print(f"📊 時系列分析セッション詳細取得開始: {session_id}")
-
-            # 基底クラスのメソッドが存在するかチェック
-            if hasattr(super(), "get_session_detail"):
-                try:
-                    base_detail = super().get_session_detail(db, session_id)
-                except Exception as e:
-                    print(f"⚠️ 基底クラスのget_session_detailエラー: {e}")
-                    base_detail = self._get_session_detail_directly(db, session_id)
-            else:
-                print("⚠️ 基底クラスにget_session_detailメソッドがありません")
-                base_detail = self._get_session_detail_directly(db, session_id)
-
-            if not base_detail or not base_detail.get("success"):
-                return base_detail
-
-            # 時系列特有のデータを取得
-            timeseries_data = self._get_timeseries_data(db, session_id)
-
-            # レスポンス構造を構築
-            response_data = {
-                "success": True,
-                "data": {
-                    "session_info": base_detail["data"]["session_info"],
-                    "metadata": {
-                        "filename": base_detail["data"]["metadata"]["filename"],
-                        "rows": base_detail["data"]["metadata"]["rows"],
-                        "columns": base_detail["data"]["metadata"]["columns"],
-                        "target_column": timeseries_data.get("target_column", ""),
-                        "feature_columns": timeseries_data.get("feature_columns", []),
-                    },
-                    "analysis_data": {
-                        "predictions": timeseries_data.get("predictions", []),
-                        "actual_values": timeseries_data.get("actual_values", []),
-                        "future_predictions": timeseries_data.get(
-                            "future_predictions", []
-                        ),
-                        "model_metrics": timeseries_data.get("model_metrics", {}),
-                        "feature_importance": timeseries_data.get(
-                            "feature_importance", []
-                        ),
-                    },
-                    "visualization": base_detail["data"].get("visualization", {}),
-                },
-            }
-
-            print(f"✅ 時系列分析セッション詳細取得完了")
-            return response_data
-
-        except Exception as e:
-            print(f"❌ 時系列分析セッション詳細取得エラー: {str(e)}")
-            import traceback
-
-            print(f"詳細:\n{traceback.format_exc()}")
-            return {"success": False, "error": str(e)}
-
-    def _get_timeseries_data(self, db: Session, session_id: int) -> Dict[str, Any]:
-        """時系列分析特有のデータを取得"""
-        try:
-            from models import CoordinatesData, AnalysisMetadata
-
-            # 座標データを取得
-            coordinates = (
-                db.query(CoordinatesData)
-                .filter(CoordinatesData.session_id == session_id)
-                .all()
-            )
-
-            # 実測値データ
-            actual_values = []
-            predictions = []
-            future_predictions = []
-
-            for coord in coordinates:
-                coord_data = {
-                    "timestamp": coord.point_name,
-                    "order_index": int(coord.dimension_4) if coord.dimension_4 else 0,
+        # 統計情報を計算（NumPy型変換付き）
+        feature_stats = {}
+        for col in feature_cols:
+            if col in df_features.columns:
+                values = df_features[col]
+                feature_stats[col] = {
+                    "mean": float(values.mean()),
+                    "std": float(values.std()),
+                    "min": float(values.min()),
+                    "max": float(values.max()),
+                    "variance": float(values.var()),
+                    "non_zero_count": int((values != 0).sum()),
+                    "total_count": int(len(values)),
+                    "non_zero_ratio": float((values != 0).sum() / len(values)),
                 }
 
-                if coord.point_type == "train":  # 実測値（訓練データ）
-                    coord_data["value"] = (
-                        float(coord.dimension_1) if coord.dimension_1 else 0.0
-                    )
-                    actual_values.append(coord_data)
-
-                elif coord.point_type == "test":  # 予測値（テストデータ）
-                    coord_data.update(
-                        {
-                            "predicted_value": (
-                                float(coord.dimension_1) if coord.dimension_1 else 0.0
-                            ),
-                            "actual_value": (
-                                float(coord.dimension_3) if coord.dimension_3 else 0.0
-                            ),
-                            "residual": (
-                                float(coord.dimension_2) if coord.dimension_2 else 0.0
-                            ),
-                        }
-                    )
-                    predictions.append(coord_data)
-
-                elif coord.point_type == "variable":  # 未来予測
-                    coord_data["predicted_value"] = (
-                        float(coord.dimension_1) if coord.dimension_1 else 0.0
-                    )
-                    future_predictions.append(coord_data)
-
-            # メタデータを取得
-            metadata_entries = (
-                db.query(AnalysisMetadata)
-                .filter(AnalysisMetadata.session_id == session_id)
-                .all()
-            )
-
-            model_metrics = {}
-            feature_importance = []
-            target_column = ""
-            feature_columns = []
-
-            for meta in metadata_entries:
-                if meta.metadata_type == "timeseries_metrics":
-                    content = meta.metadata_content
-                    model_metrics = content.get("metrics", {})
-                    feature_importance = content.get("feature_importance", [])
-                    target_column = content.get("forecast_parameters", {}).get(
-                        "target_column", ""
-                    )
-                    feature_columns = content.get("data_info", {}).get(
-                        "feature_columns", []
-                    )
-
-            print(f"🔍 時系列データ取得結果:")
-            print(f"  - 実測値: {len(actual_values)}件")
-            print(f"  - 予測値: {len(predictions)}件")
-            print(f"  - 未来予測: {len(future_predictions)}件")
-
-            return {
-                "actual_values": actual_values,
-                "predictions": predictions,
-                "future_predictions": future_predictions,
-                "model_metrics": model_metrics,
-                "feature_importance": feature_importance,
+        response = {
+            "success": True,
+            "data": {
+                "original_shape": [int(x) for x in df.shape],
+                "processed_shape": [int(x) for x in df_features.shape],
                 "target_column": target_column,
-                "feature_columns": feature_columns,
-            }
+                "date_column": date_column,
+                "feature_columns": feature_cols,
+                "feature_statistics": feature_stats,
+                "data_info": {
+                    "total_samples": int(len(df_features)),
+                    "feature_count": int(len(feature_cols)),
+                    "original_columns": list(df.columns),
+                    "processed_columns": list(df_features.columns),
+                    "rows_removed": int(len(df) - len(df_features)),
+                },
+                "sample_data": df_features[feature_cols + [target_column]]
+                .head()
+                .to_dict("records"),
+            },
+        }
 
-        except Exception as e:
-            print(f"❌ 時系列データ取得エラー: {str(e)}")
+        print("=== 特徴量抽出API完了 ===")
+        return response
+
+    except Exception as e:
+        print(f"特徴量抽出エラー: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/timeseries/analyze")
+async def analyze_timeseries(
+    file: UploadFile = File(...),
+    session_name: str = Form(...),
+    user_id: str = Form(None),
+    target_column: str = Form(...),
+    date_column: str = Form(...),
+    feature_columns: str = Form(None),
+    forecast_periods: int = Form(5),
+    test_size: float = Form(0.2),
+):
+    """時系列分析を実行"""
+    try:
+        print("=== 時系列分析API開始 ===")
+
+        # CSVファイルを読み込み
+        content = await file.read()
+        df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+
+        # 特徴量列を解析
+        feature_list = []
+        if feature_columns:
+            feature_list = [col.strip() for col in feature_columns.split(",")]
+
+        # 分析器を初期化
+        analyzer = SimpleTimeSeriesAnalyzer()
+
+        # 特徴量作成
+        df_features, feature_cols = analyzer._create_features(
+            df, target_column, date_column, feature_list
+        )
+
+        # データサイズチェック
+        if len(df_features) < 10:
             return {
-                "actual_values": [],
-                "predictions": [],
-                "future_predictions": [],
-                "model_metrics": {},
-                "feature_importance": [],
-                "target_column": "",
-                "feature_columns": [],
+                "success": False,
+                "error": f"データが不足しています: {len(df_features)}行（最低10行必要）",
             }
 
-    def _get_session_detail_directly(self, db: Session, session_id: int):
-        """時系列分析セッション詳細を直接取得"""
-        try:
-            from models import AnalysisSession, VisualizationData
+        # 特徴量とターゲットを分離
+        X_features = df_features[feature_cols].copy()
+        y_target = df_features[target_column].copy()
 
-            print(f"📊 時系列分析セッション詳細取得開始: {session_id}")
-
-            # セッション基本情報を取得
-            session = (
-                db.query(AnalysisSession)
-                .filter(AnalysisSession.id == session_id)
-                .first()
+        print(f"=== 特徴量データ確認 ===")
+        for col in feature_cols:
+            values = X_features[col]
+            print(
+                f"{col}: mean={values.mean():.4f}, std={values.std():.4f}, var={values.var():.8f}"
             )
 
-            if not session:
-                return {
-                    "success": False,
-                    "error": f"セッション {session_id} が見つかりません",
+        # データ分割
+        split_idx = int(len(X_features) * (1 - test_size))
+        X_train = X_features.iloc[:split_idx]
+        X_test = X_features.iloc[split_idx:]
+        y_train = y_target.iloc[:split_idx]
+        y_test = y_target.iloc[split_idx:]
+
+        print(f"データ分割: 訓練={len(X_train)}行, テスト={len(X_test)}行")
+
+        # 特徴量の正規化（StandardScaler使用）
+        scaler = StandardScaler()
+        X_train_scaled = pd.DataFrame(
+            scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index
+        )
+        X_test_scaled = pd.DataFrame(
+            scaler.transform(X_test), columns=X_test.columns, index=X_test.index
+        )
+
+        print("=== 正規化後の特徴量確認 ===")
+        for col in feature_cols:
+            values = X_train_scaled[col]
+            print(f"{col}: mean={values.mean():.4f}, std={values.std():.4f}")
+
+        # モデル訓練（正規化されたデータを使用）
+        if LIGHTGBM_AVAILABLE and len(X_train) > 5:
+            print("=== LightGBMモデル訓練開始 ===")
+
+            # データサイズに応じたパラメータ調整（より積極的な設定）
+            data_size = len(X_train)
+
+            if data_size < 20:
+                # 小さなデータセット用
+                params = {
+                    "objective": "regression",
+                    "metric": "rmse",
+                    "verbose": -1,
+                    "random_state": 42,
+                    "n_estimators": 100,  # 増加
+                    "max_depth": 6,  # 増加
+                    "learning_rate": 0.1,
+                    "num_leaves": 31,  # 増加
+                    "min_child_samples": 1,  # 減少
+                    "feature_fraction": 1.0,  # すべての特徴量を使用
+                    "bagging_fraction": 1.0,  # すべてのサンプルを使用
+                    "bagging_freq": 0,  # バギング無効
+                    "reg_alpha": 0.0,  # 正則化を無効
+                    "reg_lambda": 0.0,  # 正則化を無効
+                    "min_split_gain": 0.0,  # 分割制限を緩和
+                    "force_col_wise": True,  # カラム単位で処理
+                }
+            elif data_size < 100:
+                # 中サイズデータセット用
+                params = {
+                    "objective": "regression",
+                    "metric": "rmse",
+                    "verbose": -1,
+                    "random_state": 42,
+                    "n_estimators": 150,
+                    "max_depth": 8,
+                    "learning_rate": 0.1,
+                    "num_leaves": 63,
+                    "min_child_samples": 2,
+                    "feature_fraction": 0.9,
+                    "bagging_fraction": 0.9,
+                    "bagging_freq": 1,
+                    "reg_alpha": 0.01,
+                    "reg_lambda": 0.01,
+                    "force_col_wise": True,
+                }
+            else:
+                # 大きなデータセット用
+                params = {
+                    "objective": "regression",
+                    "metric": "rmse",
+                    "verbose": -1,
+                    "random_state": 42,
+                    "n_estimators": 200,
+                    "max_depth": 10,
+                    "learning_rate": 0.1,
+                    "num_leaves": 127,
+                    "min_child_samples": 5,
+                    "feature_fraction": 0.8,
+                    "bagging_fraction": 0.8,
+                    "bagging_freq": 1,
+                    "reg_alpha": 0.05,
+                    "reg_lambda": 0.05,
+                    "force_col_wise": True,
                 }
 
-            print(f"✅ セッション基本情報取得: {session.session_name}")
+            print(f"データサイズ: {data_size}, パラメータセット適用")
 
-            # 可視化データを取得
-            visualization = (
-                db.query(VisualizationData)
-                .filter(VisualizationData.session_id == session_id)
-                .first()
-            )
+            model = lgb.LGBMRegressor(**params)
+            model.fit(X_train_scaled, y_train)
+            train_pred = model.predict(X_train_scaled)
+            test_pred = model.predict(X_test_scaled)
 
-            # レスポンス構造を構築
-            response_data = {
-                "success": True,
-                "data": {
-                    "session_info": {
-                        "session_id": session.id,
-                        "session_name": session.session_name,
-                        "description": getattr(session, "description", "") or "",
-                        "filename": session.original_filename,
-                        "row_count": getattr(session, "row_count", 0) or 0,
-                        "column_count": getattr(session, "column_count", 0) or 0,
-                        "analysis_timestamp": (
-                            session.analysis_timestamp.isoformat()
-                            if hasattr(session, "analysis_timestamp")
-                            and session.analysis_timestamp
-                            else None
-                        ),
-                    },
-                    "metadata": {
-                        "filename": session.original_filename,
-                        "rows": getattr(session, "row_count", 0) or 0,
-                        "columns": getattr(session, "column_count", 0) or 0,
-                    },
-                    "visualization": {
-                        "plot_image": (
-                            visualization.image_base64 if visualization else None
-                        ),
-                        "width": visualization.width if visualization else 1400,
-                        "height": visualization.height if visualization else 1100,
-                    },
-                },
+            # 特徴量重要度（複数の種類を取得）
+            importance_gain = model.feature_importances_
+
+            print(f"=== 特徴量重要度詳細 ===")
+            feature_importance = []
+            for i, col in enumerate(feature_cols):
+                importance = float(importance_gain[i])
+                feature_importance.append((col, importance))
+                print(f"{col}: {importance:.6f}")
+
+            # 重要度が0の場合の対処
+            total_importance = sum(imp[1] for imp in feature_importance)
+            if total_importance == 0:
+                print("⚠️ すべての特徴量重要度が0です。線形回帰にフォールバック")
+                # 線形回帰を使用
+                model = LinearRegression()
+                model.fit(X_train_scaled, y_train)
+                train_pred = model.predict(X_train_scaled)
+                test_pred = model.predict(X_test_scaled)
+
+                # 係数の絶対値を重要度として使用
+                coeffs = np.abs(model.coef_)
+                feature_importance = []
+                for i, col in enumerate(feature_cols):
+                    importance = float(coeffs[i])
+                    feature_importance.append((col, importance))
+                    print(f"{col} (係数): {importance:.6f}")
+
+                model_type = "linear_regression"
+            else:
+                feature_importance.sort(key=lambda x: x[1], reverse=True)
+                model_type = "lightgbm"
+
+        else:
+            print("=== 線形回帰モデル訓練開始 ===")
+            model = LinearRegression()
+            model.fit(X_train_scaled, y_train)
+            train_pred = model.predict(X_train_scaled)
+            test_pred = model.predict(X_test_scaled)
+
+            # 特徴量重要度（係数の絶対値）
+            coeffs = np.abs(model.coef_)
+
+            print(f"=== 特徴量重要度詳細 ===")
+            feature_importance = []
+            for i, col in enumerate(feature_cols):
+                importance = float(coeffs[i])
+                feature_importance.append((col, importance))
+                print(f"{col}: {importance:.6f}")
+
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
+            model_type = "linear_regression"
+
+        # 評価指標計算
+        def calculate_metrics(y_true, y_pred):
+            y_true = np.array(y_true)
+            y_pred = np.array(y_pred)
+
+            rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+            mae = float(mean_absolute_error(y_true, y_pred))
+            r2 = float(r2_score(y_true, y_pred))
+
+            # MAPE計算（ゼロ除算対策）
+            mask = y_true != 0
+            if mask.sum() > 0:
+                mape = float(
+                    np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+                )
+            else:
+                mape = 0.0
+
+            return {
+                "rmse": rmse,
+                "mae": mae,
+                "r2": r2,
+                "mape": mape,
             }
 
-            print(f"✅ 時系列分析セッション詳細取得完了")
-            return response_data
+        train_metrics = calculate_metrics(y_train, train_pred)
+        test_metrics = calculate_metrics(y_test, test_pred)
 
-        except Exception as e:
-            print(f"❌ 時系列分析セッション詳細取得エラー: {str(e)}")
-            import traceback
+        print(f"=== モデル性能 ===")
+        print(
+            f"訓練 - RMSE: {train_metrics['rmse']:.4f}, R²: {train_metrics['r2']:.4f}"
+        )
+        print(
+            f"テスト - RMSE: {test_metrics['rmse']:.4f}, R²: {test_metrics['r2']:.4f}"
+        )
 
-            print(f"詳細:\n{traceback.format_exc()}")
-            return {"success": False, "error": str(e)}
+        # 過学習チェック
+        overfitting_risk = "low"
+        if train_metrics["r2"] > 0.9 and test_metrics["r2"] < 0.5:
+            overfitting_risk = "high"
+        elif train_metrics["r2"] > 0.8 and test_metrics["r2"] < 0.3:
+            overfitting_risk = "medium"
+
+        if overfitting_risk != "low":
+            print(f"⚠️ 過学習リスク: {overfitting_risk}")
+
+        # 予測データを構築
+        predictions = []
+        for i, (idx, pred, actual) in enumerate(zip(X_test.index, test_pred, y_test)):
+            predictions.append(
+                {
+                    "timestamp": str(idx),
+                    "predicted_value": float(pred),
+                    "actual_value": float(actual),
+                    "residual": float(actual - pred),
+                    "order_index": int(i),
+                }
+            )
+
+        # 実測値データを構築
+        actual_values = []
+        for i, (idx, value) in enumerate(y_train.items()):
+            actual_values.append(
+                {
+                    "timestamp": str(idx),
+                    "value": float(value),
+                    "order_index": int(i),
+                }
+            )
+
+        # レスポンス作成
+        response = {
+            "success": True,
+            "session_id": None,  # データベース保存は後で実装
+            "analysis_type": "timeseries",
+            "data": {
+                "model_type": model_type,
+                "target_column": target_column,
+                "feature_columns": feature_cols,
+                "forecast_periods": int(forecast_periods),
+                "model_metrics": {
+                    "train": train_metrics,
+                    "test": test_metrics,
+                    "r2_score": test_metrics["r2"],
+                    "rmse": test_metrics["rmse"],
+                    "mae": test_metrics["mae"],
+                    "overfitting_risk": overfitting_risk,
+                },
+                "feature_importance": feature_importance,
+                "predictions": predictions,
+                "actual_values": actual_values,
+                "future_predictions": [],
+                "data_info": {
+                    "total_samples": int(len(X_features)),
+                    "train_samples": int(len(X_train)),
+                    "test_samples": int(len(X_test)),
+                    "feature_count": int(len(feature_cols)),
+                    "target_column": target_column,
+                    "feature_columns": feature_cols,
+                    "normalization_applied": True,
+                },
+            },
+            "metadata": {
+                "session_name": session_name,
+                "filename": file.filename,
+                "rows": int(df.shape[0]),
+                "columns": int(df.shape[1]),
+                "target_column": target_column,
+                "feature_columns": feature_cols,
+            },
+        }
+
+        print("=== 時系列分析API処理完了 ===")
+        return response
+
+    except Exception as e:
+        print(f"時系列分析エラー: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/timeseries/sessions")
+async def get_timeseries_sessions(
+    analysis_type: str = "timeseries",
+    user_id: str = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """時系列分析のセッション一覧を取得"""
+    try:
+        query = db.query(AnalysisSession).filter(
+            AnalysisSession.analysis_type == analysis_type
+        )
+
+        if user_id:
+            query = query.filter(AnalysisSession.user_id == user_id)
+
+        sessions = (
+            query.order_by(AnalysisSession.analysis_timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        session_list = []
+        for session in sessions:
+            session_data = {
+                "id": int(session.id),
+                "session_name": session.session_name,
+                "analysis_type": session.analysis_type,
+                "original_filename": session.original_filename,
+                "row_count": int(session.row_count) if session.row_count else 0,
+                "column_count": (
+                    int(session.column_count) if session.column_count else 0
+                ),
+                "analysis_timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if session.analysis_timestamp
+                    else None
+                ),
+                "user_id": session.user_id,
+            }
+
+            if session.analysis_parameters:
+                session_data["parameters"] = session.analysis_parameters
+
+            session_list.append(session_data)
+
+        return {
+            "success": True,
+            "sessions": session_list,
+            "total": int(len(session_list)),
+        }
+
+    except Exception as e:
+        print(f"セッション一覧取得エラー: {e}")
+        return {"success": False, "error": str(e)}
