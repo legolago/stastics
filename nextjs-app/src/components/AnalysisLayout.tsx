@@ -51,6 +51,14 @@ const analysisRoutes = [
     description: '顧客を最新購入日、購入頻度、購入金額でセグメンテーション',
     icon: '🔍',
     status: 'available'
+  },
+  {
+    id: 'timeseries',
+    name: '時系列分析',
+    path: '/timeseries',
+    description: '時間軸に沿ったデータの傾向、季節性、周期性を分析',
+    icon: '🔍',
+    status: 'available'
   }
 ];
 
@@ -78,7 +86,7 @@ export default function AnalysisLayout({ children, title, description, analysisT
               
               <Link href="/" className="flex items-center ml-4 lg:ml-0">
                 <div className="text-2xl font-bold text-indigo-600">📈</div>
-                <h1 className="ml-3 text-xl font-bold text-gray-900">多変量解析アプリTOP</h1>
+                <h1 className="ml-3 text-sm font-bold text-gray-900">TOP</h1>
               </Link>
             </div>
             

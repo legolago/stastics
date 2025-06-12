@@ -148,17 +148,20 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         results: Dict[str, Any],
         plot_base64: str,
     ) -> int:
-        """基底クラスのメソッドがない場合の直接保存"""
+        """基底クラスのメソッドがない場合の直接保存（DB互換性対応版）"""
         try:
-            from models import AnalysisSession, VisualizationData, SessionTag
+            from models import AnalysisSession, VisualizationData
+
+            # 🆕 既存のデータベーススキーマに合わせてインポート
+            from sqlalchemy import text
 
             print(f"📊 セッション直接保存開始")
 
-            # セッション基本情報を保存
+            # セッション基本情報を保存（analysis_typeを明示的に指定）
             session = AnalysisSession(
                 session_name=session_name,
                 description=description,
-                analysis_type=self.get_analysis_type(),
+                analysis_type="timeseries",  # 🆕 明示的に指定
                 original_filename=file.filename,
                 user_id=user_id,
                 row_count=df.shape[0],
@@ -177,19 +180,30 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
             session_id = session.id
             print(f"✅ セッション保存完了: session_id = {session_id}")
 
-            # タグを保存
-            if tags:
-                for tag in tags:
-                    if tag.strip():
-                        session_tag = SessionTag(
-                            session_id=session_id, tag_name=tag.strip()
-                        )
-                        db.add(session_tag)
+            # タグを保存（既存のカラム名'tag'を使用）
+            if tags and session_id:
+                try:
+                    for tag in tags:
+                        if tag.strip():
+                            # 🆕 生のSQLを使用して既存スキーマに対応
+                            db.execute(
+                                text(
+                                    "INSERT INTO session_tags (session_id, tag, created_at) VALUES (:session_id, :tag, :created_at)"
+                                ),
+                                {
+                                    "session_id": session_id,
+                                    "tag": tag.strip(),
+                                    "created_at": datetime.utcnow(),
+                                },
+                            )
+                    print(f"✅ タグ保存完了: {len(tags)}件")
+                except Exception as tag_error:
+                    print(f"⚠️ タグ保存エラー（スキップ）: {tag_error}")
+                    # タグ保存に失敗してもセッションは保存する
 
-            # プロット画像を保存（一時的にスキップ）
+            # プロット画像を保存
             if plot_base64:
                 try:
-                    # デフォルト値で保存を試行
                     visualization = VisualizationData(
                         session_id=session_id,
                         image_base64=plot_base64,
@@ -198,17 +212,10 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                         height=1100,
                     )
                     db.add(visualization)
-                    db.flush()  # 可視化データの保存を試行
+                    db.flush()
                     print("✅ 可視化データ保存完了")
                 except Exception as viz_error:
                     print(f"⚠️ 可視化データ保存エラー（スキップ）: {viz_error}")
-                    # 可視化データの保存に失敗してもセッションは保存する
-                    # エラーログに詳細を出力
-                    import traceback
-
-                    print(f"可視化エラーの詳細:\n{traceback.format_exc()}")
-            else:
-                print("プロット画像なし")
 
             db.commit()
             print(f"✅ 全体のコミット完了: session_id = {session_id}")
@@ -354,16 +361,20 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         date_column: Optional[str],
         feature_columns: Optional[List[str]],
     ) -> pd.DataFrame:
-        """時系列分析用のデータ前処理"""
+        """時系列分析用のデータ前処理（修正版）"""
         df_clean = df.copy()
 
         # 日付列の処理
         if date_column and date_column in df_clean.columns:
-            df_clean[date_column] = pd.to_datetime(df_clean[date_column])
-            df_clean = df_clean.sort_values(date_column)
-            df_clean.set_index(date_column, inplace=True)
+            try:
+                df_clean[date_column] = pd.to_datetime(df_clean[date_column])
+                df_clean = df_clean.sort_values(date_column)
+                df_clean.set_index(date_column, inplace=True)
+                print(f"✅ 日付列 '{date_column}' をインデックスに設定")
+            except Exception as e:
+                print(f"⚠️ 日付列の処理でエラー: {e}")
+                print("インデックスをそのまま使用します")
         else:
-            # 日付列が指定されていない場合、インデックスを使用
             print("日付列が指定されていません。インデックスを時系列として使用します。")
 
         # 目的変数の存在確認
@@ -376,17 +387,28 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         if target_column not in numeric_columns:
             raise ValueError(f"目的変数 '{target_column}' は数値型である必要があります")
 
-        # 特徴量の選択
+        # 🆕 特徴量の選択（数値列のみ）
         if feature_columns:
             available_features = [
                 col
                 for col in feature_columns
                 if col in numeric_columns and col != target_column
             ]
+            print(f"🔍 指定された特徴量のうち利用可能: {available_features}")
+
+            # 利用できない特徴量があった場合の警告
+            unavailable_features = [
+                col
+                for col in feature_columns
+                if col not in numeric_columns or col not in df_clean.columns
+            ]
+            if unavailable_features:
+                print(f"⚠️ 利用できない特徴量: {unavailable_features}")
         else:
             available_features = [
                 col for col in numeric_columns if col != target_column
             ]
+            print(f"🔍 自動選択された特徴量: {available_features}")
 
         # 欠損値の処理
         df_clean = df_clean.dropna(subset=[target_column])
@@ -395,6 +417,10 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
 
         print(f"前処理完了: {df.shape} -> {df_clean.shape}")
         print(f"使用する特徴量: {available_features}")
+
+        # 🆕 利用可能な特徴量リストを保存（後で使用するため）
+        df_clean._available_features = available_features
+
         return df_clean
 
     def _compute_timeseries_analysis(
@@ -405,19 +431,38 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         test_size: float,
         **kwargs,
     ) -> Dict[str, Any]:
-        """時系列分析の計算"""
+        """時系列分析の計算（修正版）"""
         try:
-            # 特徴量とターゲットの分離
-            numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-            feature_columns = [col for col in numeric_columns if col != target_column]
+            # 🆕 前処理で保存された特徴量リストを取得
+            feature_columns = getattr(df, "_available_features", [])
 
             # 時系列特徴量の作成
             df_features = self._create_time_features(df, target_column, feature_columns)
+
+            # 🆕 LightGBM用のデータ型確認
+            print(f"🔍 LightGBM投入前のデータ型確認:")
+            problematic_columns = []
+            for col in df_features.columns:
+                dtype = df_features[col].dtype
+                print(f"  {col}: {dtype}")
+
+                # LightGBMが受け付けないデータ型をチェック
+                if dtype == "object" or dtype.name.startswith("datetime"):
+                    if col != target_column:  # 目的変数以外
+                        problematic_columns.append(col)
+
+            # 問題のある列を削除
+            if problematic_columns:
+                print(f"🗑️ LightGBM非対応列を削除: {problematic_columns}")
+                df_features = df_features.drop(columns=problematic_columns)
 
             # データ分割
             split_index = int(len(df_features) * (1 - test_size))
             train_data = df_features.iloc[:split_index]
             test_data = df_features.iloc[split_index:]
+
+            print(f"📊 データ分割: train={len(train_data)}, test={len(test_data)}")
+            print(f"📊 最終特徴量: {list(df_features.columns)}")
 
             # モデル学習
             if LIGHTGBM_AVAILABLE:
@@ -443,9 +488,11 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                         "total_samples": len(df_features),
                         "train_samples": len(train_data),
                         "test_samples": len(test_data),
-                        "feature_count": len(feature_columns),
+                        "feature_count": len(df_features.columns) - 1,  # 目的変数を除く
                         "target_column": target_column,
-                        "feature_columns": feature_columns,
+                        "feature_columns": [
+                            col for col in df_features.columns if col != target_column
+                        ],
                     },
                     "future_predictions": future_predictions,
                     "timeseries_info": {
@@ -477,7 +524,7 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
     def _create_time_features(
         self, df: pd.DataFrame, target_column: str, feature_columns: List[str]
     ) -> pd.DataFrame:
-        """時系列特徴量を作成"""
+        """時系列特徴量を作成（データ型修正版）"""
         df_features = df.copy()
 
         # ラグ特徴量
@@ -501,13 +548,49 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
             df_features["day_of_week"] = df.index.dayofweek
             df_features["day_of_year"] = df.index.dayofyear
 
-        # 既存の特徴量を追加
+        # 🆕 既存の数値特徴量を追加（日付列は除外）
         for col in feature_columns:
             if col in df.columns:
-                df_features[col] = df[col]
+                # 🆕 数値型のみを含める
+                if df[col].dtype in ["int64", "float64", "int32", "float32"]:
+                    df_features[col] = df[col]
+                else:
+                    print(f"⚠️ 非数値列をスキップ: {col} (dtype: {df[col].dtype})")
+
+        # 🆕 元の日付列を削除（もし含まれている場合）
+        date_columns_to_remove = []
+        for col in df_features.columns:
+            if df_features[col].dtype == "object" or df_features[
+                col
+            ].dtype.name.startswith("datetime"):
+                if col != target_column:  # 目的変数は保持
+                    date_columns_to_remove.append(col)
+
+        if date_columns_to_remove:
+            print(f"🗑️ 日付/文字列列を削除: {date_columns_to_remove}")
+            df_features = df_features.drop(columns=date_columns_to_remove)
+
+        # 🆕 データ型の最終確認と変換
+        for col in df_features.columns:
+            if col != target_column:  # 目的変数は除く
+                if df_features[col].dtype == "object":
+                    try:
+                        # 文字列を数値に変換を試行
+                        df_features[col] = pd.to_numeric(
+                            df_features[col], errors="coerce"
+                        )
+                        print(f"✅ 列 {col} を数値に変換")
+                    except:
+                        # 変換できない場合は削除
+                        print(f"⚠️ 列 {col} を削除（数値変換不可）")
+                        df_features = df_features.drop(columns=[col])
 
         # 欠損値を除去
         df_features = df_features.dropna()
+
+        print(f"🔍 最終的な特徴量データ型:")
+        for col in df_features.columns:
+            print(f"  {col}: {df_features[col].dtype}")
 
         return df_features
 
