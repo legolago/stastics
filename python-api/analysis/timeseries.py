@@ -22,14 +22,310 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
 
+<<<<<<< HEAD
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 router = APIRouter()
+=======
+                # 座標データを保存
+                self._save_coordinates_data(db, session_id, df, results)
+            else:
+                print(f"❌ セッション保存に失敗: session_id = {session_id}")
+
+            return session_id
+
+        except Exception as e:
+            print(f"❌ 時系列分析データベース保存エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            return 0
+
+    def _save_timeseries_specific_data(
+        self, db: Session, session_id: int, results: Dict[str, Any]
+    ):
+        """時系列分析特有のデータを保存"""
+        try:
+            from models import AnalysisMetadata
+
+            print(f"=== 時系列分析特有データ保存開始 ===")
+            print(f"Session ID: {session_id}")
+
+            # session_idが有効かチェック
+            if not session_id or session_id == 0:
+                print(f"❌ 無効なsession_id: {session_id}")
+                return
+
+            # モデル性能メタデータ
+            if "model_metrics" in results:
+                metrics_metadata = AnalysisMetadata(
+                    session_id=session_id,
+                    metadata_type="timeseries_metrics",
+                    metadata_content={
+                        "metrics": results["model_metrics"],
+                        "feature_importance": results.get("feature_importance", []),
+                        "forecast_parameters": results.get("forecast_parameters", {}),
+                        "model_type": results.get("model_type", "lightgbm"),
+                        "data_info": results.get("data_info", {}),
+                    },
+                )
+                db.add(metrics_metadata)
+
+            # 時系列データ詳細
+            if "timeseries_info" in results:
+                ts_info_metadata = AnalysisMetadata(
+                    session_id=session_id,
+                    metadata_type="timeseries_info",
+                    metadata_content=results["timeseries_info"],
+                )
+                db.add(ts_info_metadata)
+
+            # コミット前にflushでエラーチェック
+            db.flush()
+            db.commit()
+            print(f"✅ 時系列分析特有データ保存完了")
+
+        except Exception as e:
+            print(f"時系列分析特有データ保存エラー: {e}")
+            try:
+                db.rollback()
+                print("データベースをロールバックしました")
+            except Exception as rollback_error:
+                print(f"ロールバックエラー: {rollback_error}")
+
+    def _save_session_directly(
+        self,
+        db: Session,
+        session_name: str,
+        description: Optional[str],
+        tags: List[str],
+        user_id: str,
+        file,
+        csv_text: str,
+        df: pd.DataFrame,
+        results: Dict[str, Any],
+        plot_base64: str,
+    ) -> int:
+        """基底クラスのメソッドがない場合の直接保存"""
+        try:
+            from models import AnalysisSession, VisualizationData, SessionTag
+
+            print(f"📊 セッション直接保存開始")
+
+            # セッション基本情報を保存
+            session = AnalysisSession(
+                session_name=session_name,
+                description=description,
+                analysis_type=self.get_analysis_type(),
+                original_filename=file.filename,
+                user_id=user_id,
+                row_count=df.shape[0],
+                column_count=df.shape[1],
+                # 時系列分析特有のメタデータ
+                dimensions_count=1,  # 予測値
+                dimension_1_contribution=(
+                    results.get("model_metrics", {}).get("r2_score", 0)
+                    if results.get("model_metrics")
+                    else 0
+                ),
+            )
+
+            db.add(session)
+            db.flush()  # IDを取得するためflush
+            session_id = session.id
+            print(f"✅ セッション保存完了: session_id = {session_id}")
+
+            # タグを保存
+            if tags:
+                for tag in tags:
+                    if tag.strip():
+                        session_tag = SessionTag(
+                            session_id=session_id, tag_name=tag.strip()
+                        )
+                        db.add(session_tag)
+
+            # プロット画像を保存（一時的にスキップ）
+            if plot_base64:
+                try:
+                    # デフォルト値で保存を試行
+                    visualization = VisualizationData(
+                        session_id=session_id,
+                        image_base64=plot_base64,
+                        image_size=len(plot_base64),
+                        width=1400,
+                        height=1100,
+                    )
+                    db.add(visualization)
+                    db.flush()  # 可視化データの保存を試行
+                    print("✅ 可視化データ保存完了")
+                except Exception as viz_error:
+                    print(f"⚠️ 可視化データ保存エラー（スキップ）: {viz_error}")
+                    # 可視化データの保存に失敗してもセッションは保存する
+                    # エラーログに詳細を出力
+                    import traceback
+
+                    print(f"可視化エラーの詳細:\n{traceback.format_exc()}")
+            else:
+                print("プロット画像なし")
+
+            db.commit()
+            print(f"✅ 全体のコミット完了: session_id = {session_id}")
+            return session_id
+
+        except Exception as e:
+            print(f"❌ 直接保存エラー: {str(e)}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            try:
+                db.rollback()
+                print("データベースをロールバックしました")
+            except Exception as rollback_error:
+                print(f"ロールバックエラー: {rollback_error}")
+            return 0
+
+    def _save_coordinates_data(
+        self, db: Session, session_id: int, df: pd.DataFrame, results: Dict[str, Any]
+    ):
+        """時系列分析の座標データを保存（実測値・予測値・残差）"""
+        try:
+            from models import CoordinatesData
+
+            print(f"=== 時系列分析座標データ保存開始 ===")
+            print(f"Session ID: {session_id}")
+
+            # session_idが有効かチェック
+            if not session_id or session_id == 0:
+                print(f"❌ 無効なsession_id: {session_id}")
+                return
+
+            # 実測値を保存（訓練データとして）
+            actual_values = results.get("actual_values", [])
+            if actual_values:
+                print(f"実測値データ保存: {len(actual_values)}件")
+                for i, (timestamp, value) in enumerate(actual_values):
+                    coord_data = CoordinatesData(
+                        session_id=session_id,
+                        point_name=str(timestamp),
+                        point_type="train",  # 訓練データとして保存
+                        dimension_1=float(value),
+                        dimension_2=0.0,  # 実測値なので予測誤差は0
+                        dimension_4=float(i),  # 時系列の順序
+                    )
+                    db.add(coord_data)
+
+            # 予測値を保存（テストデータとして）
+            predictions = results.get("predictions", [])
+            if predictions:
+                print(f"予測値データ保存: {len(predictions)}件")
+                for i, (timestamp, pred_value, actual_value) in enumerate(predictions):
+                    residual = (
+                        actual_value - pred_value if actual_value is not None else 0.0
+                    )
+                    coord_data = CoordinatesData(
+                        session_id=session_id,
+                        point_name=str(timestamp),
+                        point_type="test",  # テストデータとして保存
+                        dimension_1=float(pred_value),
+                        dimension_2=float(residual),
+                        dimension_3=(
+                            float(actual_value) if actual_value is not None else None
+                        ),
+                        dimension_4=float(i),  # 時系列の順序
+                    )
+                    db.add(coord_data)
+
+            # 未来予測値を保存（変数として）
+            future_predictions = results.get("future_predictions", [])
+            if future_predictions:
+                print(f"未来予測値データ保存: {len(future_predictions)}件")
+                for i, (timestamp, pred_value) in enumerate(future_predictions):
+                    coord_data = CoordinatesData(
+                        session_id=session_id,
+                        point_name=str(timestamp),
+                        point_type="variable",  # 変数として保存
+                        dimension_1=float(pred_value),
+                        dimension_2=0.0,  # 未来なので残差は不明
+                        dimension_4=float(len(predictions) + i),  # 時系列の順序
+                    )
+                    db.add(coord_data)
+
+            # コミット前にflushでエラーチェック
+            db.flush()
+            db.commit()
+            print(f"✅ 時系列分析座標データ保存完了")
+
+        except Exception as e:
+            print(f"❌ 時系列分析座標データ保存エラー: {e}")
+            import traceback
+
+            print(f"詳細:\n{traceback.format_exc()}")
+            try:
+                db.rollback()
+                print("データベースをロールバックしました")
+            except Exception as rollback_error:
+                print(f"ロールバックエラー: {rollback_error}")
+
+    def analyze(
+        self,
+        df: pd.DataFrame,
+        target_column: str,
+        date_column: Optional[str] = None,
+        feature_columns: Optional[List[str]] = None,
+        forecast_periods: int = 30,
+        test_size: float = 0.2,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """時系列分析を実行"""
+        try:
+            print(f"=== 時系列分析開始 ===")
+            print(f"入力データ:\n{df}")
+            print(f"データ形状: {df.shape}")
+            print(f"目的変数: {target_column}, 日付列: {date_column}")
+            print(f"予測期間: {forecast_periods}, テストサイズ: {test_size}")
+
+            # データの検証と前処理
+            df_processed = self._preprocess_timeseries_data(
+                df, target_column, date_column, feature_columns
+            )
+            print(f"前処理後データ:\n{df_processed}")
+>>>>>>> parent of 4e9bd04... 20250612_1355
 
 
+<<<<<<< HEAD
 class SimpleTimeSeriesAnalyzer:
     """簡略化された時系列分析クラス"""
+=======
+            print(f"分析結果: {list(results.keys())}")
+            return results
+
+        except Exception as e:
+            print(f"時系列分析エラー: {str(e)}")
+            import traceback
+
+            print(f"トレースバック:\n{traceback.format_exc()}")
+            raise
+
+    def _preprocess_timeseries_data(
+        self,
+        df: pd.DataFrame,
+        target_column: str,
+        date_column: Optional[str],
+        feature_columns: Optional[List[str]],
+    ) -> pd.DataFrame:
+        """時系列分析用のデータ前処理"""
+        df_clean = df.copy()
+
+        # 日付列の処理
+        if date_column and date_column in df_clean.columns:
+            df_clean[date_column] = pd.to_datetime(df_clean[date_column])
+            df_clean = df_clean.sort_values(date_column)
+            df_clean.set_index(date_column, inplace=True)
+        else:
+            # 日付列が指定されていない場合、インデックスを使用
+            print("日付列が指定されていません。インデックスを時系列として使用します。")
+>>>>>>> parent of 4e9bd04... 20250612_1355
 
     def _create_features(self, df, target_column, date_column, feature_columns=None):
         """時系列特徴量を作成"""
@@ -43,6 +339,7 @@ class SimpleTimeSeriesAnalyzer:
             df_features = df_features.sort_values(date_column)
             df_features = df_features.reset_index(drop=True)
 
+<<<<<<< HEAD
         # 元の特徴量を追加
         feature_cols = []
         if feature_columns:
@@ -67,6 +364,55 @@ class SimpleTimeSeriesAnalyzer:
                     df_features[target_column]
                     .rolling(window=window, min_periods=1)
                     .mean()
+=======
+        # 特徴量の選択
+        if feature_columns:
+            available_features = [
+                col
+                for col in feature_columns
+                if col in numeric_columns and col != target_column
+            ]
+        else:
+            available_features = [
+                col for col in numeric_columns if col != target_column
+            ]
+
+        # 欠損値の処理
+        df_clean = df_clean.dropna(subset=[target_column])
+        if df_clean.empty:
+            raise ValueError("目的変数の欠損値を除去した結果、データが空になりました")
+
+        print(f"前処理完了: {df.shape} -> {df_clean.shape}")
+        print(f"使用する特徴量: {available_features}")
+        return df_clean
+
+    def _compute_timeseries_analysis(
+        self,
+        df: pd.DataFrame,
+        target_column: str,
+        forecast_periods: int,
+        test_size: float,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """時系列分析の計算"""
+        try:
+            # 特徴量とターゲットの分離
+            numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            feature_columns = [col for col in numeric_columns if col != target_column]
+
+            # 時系列特徴量の作成
+            df_features = self._create_time_features(df, target_column, feature_columns)
+
+            # データ分割
+            split_index = int(len(df_features) * (1 - test_size))
+            train_data = df_features.iloc[:split_index]
+            test_data = df_features.iloc[split_index:]
+
+            # モデル学習
+            if LIGHTGBM_AVAILABLE:
+                results = self._train_lightgbm_model(
+                    train_data, test_data, target_column
+>>>>>>> parent of 4e9bd04... 20250612_1355
                 )
                 feature_cols.append(ma_col)
                 print(f"移動平均特徴量作成: {ma_col}")
@@ -99,12 +445,45 @@ class SimpleTimeSeriesAnalyzer:
             else:
                 print("四半期特徴量をスキップ: 分散が0")
 
+<<<<<<< HEAD
             if dow_vals.var() > 0:
                 df_features["day_of_week"] = dow_vals
                 feature_cols.append("day_of_week")
                 print(f"日付特徴量追加: day_of_week (分散={dow_vals.var():.4f})")
             else:
                 print("曜日特徴量をスキップ: 分散が0")
+=======
+            # 結果の統合
+            results.update(
+                {
+                    "forecast_periods": forecast_periods,
+                    "test_size": test_size,
+                    "data_info": {
+                        "total_samples": len(df_features),
+                        "train_samples": len(train_data),
+                        "test_samples": len(test_data),
+                        "feature_count": len(feature_columns),
+                        "target_column": target_column,
+                        "feature_columns": feature_columns,
+                    },
+                    "future_predictions": future_predictions,
+                    "timeseries_info": {
+                        "start_date": (
+                            str(df.index[0])
+                            if hasattr(df.index[0], "strftime")
+                            else str(df.index[0])
+                        ),
+                        "end_date": (
+                            str(df.index[-1])
+                            if hasattr(df.index[-1], "strftime")
+                            else str(df.index[-1])
+                        ),
+                        "frequency": self._infer_frequency(df.index),
+                        "trend": self._analyze_trend(df[target_column]),
+                    },
+                }
+            )
+>>>>>>> parent of 4e9bd04... 20250612_1355
 
         # 日付列とターゲット列を特徴量から除外
         feature_cols = [
@@ -116,17 +495,26 @@ class SimpleTimeSeriesAnalyzer:
 
         print(f"最終的な特徴量: {feature_cols}")
 
+<<<<<<< HEAD
         # NaN値を削除
         initial_rows = len(df_features)
         df_features = df_features.dropna()
         final_rows = len(df_features)
         print(f"NaN削除後: {initial_rows} -> {final_rows} 行")
+=======
+    def _create_time_features(
+        self, df: pd.DataFrame, target_column: str, feature_columns: List[str]
+    ) -> pd.DataFrame:
+        """時系列特徴量を作成"""
+        df_features = df.copy()
+>>>>>>> parent of 4e9bd04... 20250612_1355
 
         # 数値型に変換
         for col in feature_cols:
             if col in df_features.columns:
                 df_features[col] = pd.to_numeric(df_features[col], errors="coerce")
 
+<<<<<<< HEAD
         df_features = df_features.dropna()
 
         # 特徴量の分散をチェック（より緩い閾値に変更）
@@ -145,6 +533,60 @@ class SimpleTimeSeriesAnalyzer:
                     print(
                         f"{col}: mean={mean_val:.4f}, var={variance:.8f} ✗ (分散が小さすぎるため除外)"
                     )
+=======
+        # 時間ベースの特徴量（日付インデックスがある場合）
+        if hasattr(df.index, "month"):
+            df_features["month"] = df.index.month
+            df_features["quarter"] = df.index.quarter
+            df_features["day_of_week"] = df.index.dayofweek
+            df_features["day_of_year"] = df.index.dayofyear
+
+        # 既存の特徴量を追加
+        for col in feature_columns:
+            if col in df.columns:
+                df_features[col] = df[col]
+
+        # 欠損値を除去
+        df_features = df_features.dropna()
+
+        return df_features
+
+    def _train_lightgbm_model(
+        self, train_data: pd.DataFrame, test_data: pd.DataFrame, target_column: str
+    ) -> Dict[str, Any]:
+        """LightGBMモデルの学習"""
+        # 特徴量とターゲットの分離
+        X_train = train_data.drop(columns=[target_column])
+        y_train = train_data[target_column]
+        X_test = test_data.drop(columns=[target_column])
+        y_test = test_data[target_column]
+
+        # LightGBMデータセットの作成
+        train_dataset = lgb.Dataset(X_train, label=y_train)
+        valid_dataset = lgb.Dataset(X_test, label=y_test, reference=train_dataset)
+
+        # パラメータ設定
+        params = {
+            "objective": "regression",
+            "metric": "rmse",
+            "boosting_type": "gbdt",
+            "num_leaves": 31,
+            "learning_rate": 0.05,
+            "feature_fraction": 0.9,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 5,
+            "verbose": -1,
+        }
+
+        # モデル学習
+        model = lgb.train(
+            params,
+            train_dataset,
+            valid_sets=[valid_dataset],
+            num_boost_round=1000,
+            callbacks=[lgb.early_stopping(100), lgb.log_evaluation(0)],
+        )
+>>>>>>> parent of 4e9bd04... 20250612_1355
 
         feature_cols = filtered_features
         print(f"分散フィルタ後の特徴量: {feature_cols}")

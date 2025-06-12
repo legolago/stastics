@@ -111,7 +111,7 @@ export default function StatisticsHomePage() {
       id: 'timeseries',
       name: '時系列分析',
       description: '時間軸に沿ったデータの傾向、季節性、周期性を分析します',
-      status: 'available',
+      status: 'disabled',
       path: '/timeseries',
       icon: (
         <svg className="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">

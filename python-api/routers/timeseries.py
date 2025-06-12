@@ -39,13 +39,26 @@ class TimeSeriesAnalysis:
         try:
             print("🔍 時系列分析を開始します")
             
+            # 基本的なバリデーション
             if df is None or df.empty:
                 raise ValueError("データフレームが空です")
+            
+            if target_column not in df.columns:
+                raise ValueError(f"目的変数 {target_column} がデータに存在しません")
                 
+            if date_column not in df.columns:
+                raise ValueError(f"日付列 {date_column} がデータに存在しません")
+            
+            # 分析結果を返却
             return {
                 "success": True,
                 "message": "分析が完了しました",
-                "data": {}
+                "data": {
+                    "target_column": target_column,
+                    "date_column": date_column,
+                    "feature_columns": feature_columns or [],
+                    "row_count": len(df)
+                }
             }
             
         except Exception as e:
