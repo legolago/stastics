@@ -14,6 +14,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sqlalchemy.orm import Session
 from .base import BaseAnalyzer
 import warnings
+from datetime import datetime
 
 warnings.filterwarnings("ignore")
 
@@ -93,10 +94,13 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
             print(f"=== 時系列分析特有データ保存開始 ===")
             print(f"Session ID: {session_id}")
 
-            # session_idが有効かチェック
-            if not session_id or session_id == 0:
-                print(f"❌ 無効なsession_id: {session_id}")
-                return
+            ## 特徴量重要度のデバッグ出力
+            feature_importance = results.get("feature_importance", [])
+            print(f"🔍 保存する特徴量重要度数: {len(feature_importance)}")
+            if feature_importance:
+                print(f"🔍 上位5個の特徴量重要度:")
+                for feat, imp in feature_importance[:5]:
+                    print(f"  {feat}: {imp}")
 
             # モデル性能メタデータ
             if "model_metrics" in results:
@@ -166,6 +170,7 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                 user_id=user_id,
                 row_count=df.shape[0],
                 column_count=df.shape[1],
+                tags=tags,
                 # 時系列分析特有のメタデータ
                 dimensions_count=1,  # 予測値
                 dimension_1_contribution=(
@@ -185,7 +190,6 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                 try:
                     for tag in tags:
                         if tag.strip():
-                            # 🆕 生のSQLを使用して既存スキーマに対応
                             db.execute(
                                 text(
                                     "INSERT INTO session_tags (session_id, tag, created_at) VALUES (:session_id, :tag, :created_at)"
@@ -196,9 +200,11 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                                     "created_at": datetime.utcnow(),
                                 },
                             )
-                    print(f"✅ タグ保存完了: {len(tags)}件")
+                    print(f"✅ session_tagsテーブルにもタグ保存完了: {len(tags)}件")
                 except Exception as tag_error:
-                    print(f"⚠️ タグ保存エラー（スキップ）: {tag_error}")
+                    print(
+                        f"⚠️ session_tagsテーブルへのタグ保存エラー（スキップ）: {tag_error}"
+                    )
                     # タグ保存に失敗してもセッションは保存する
 
             # プロット画像を保存
@@ -528,18 +534,24 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         df_features = df.copy()
 
         # ラグ特徴量
-        for lag in [1, 3, 7, 14]:
+        for lag in [1, 2, 3, 5, 7, 14, 21, 30]:
             if len(df) > lag:
                 df_features[f"{target_column}_lag_{lag}"] = df_features[
                     target_column
                 ].shift(lag)
 
         # 移動平均特徴量
-        for window in [3, 7, 14]:
+        for window in [3, 5, 7, 14, 21, 30]:
             if len(df) > window:
                 df_features[f"{target_column}_ma_{window}"] = (
                     df_features[target_column].rolling(window=window).mean()
                 )
+        # 差分特徴量
+        for diff in [1, 7, 30]:
+            if len(df) > diff:
+                df_features[f"{target_column}_diff_{diff}"] = df_features[
+                    target_column
+                ].diff(diff)
 
         # 時間ベースの特徴量（日付インデックスがある場合）
         if hasattr(df.index, "month"):
@@ -547,15 +559,22 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
             df_features["quarter"] = df.index.quarter
             df_features["day_of_week"] = df.index.dayofweek
             df_features["day_of_year"] = df.index.dayofyear
+            df_features["week_of_year"] = df.index.isocalendar().week
+            df_features["is_weekend"] = (df.index.dayofweek >= 5).astype(int)
+            df_features["is_month_start"] = df.index.is_month_start.astype(int)
+            df_features["is_month_end"] = df.index.is_month_end.astype(int)
 
         # 🆕 既存の数値特徴量を追加（日付列は除外）
         for col in feature_columns:
             if col in df.columns:
-                # 🆕 数値型のみを含める
                 if df[col].dtype in ["int64", "float64", "int32", "float32"]:
                     df_features[col] = df[col]
-                else:
-                    print(f"⚠️ 非数値列をスキップ: {col} (dtype: {df[col].dtype})")
+                    # 特徴量のラグも作成
+                    for lag in [1, 3, 7]:
+                        if len(df) > lag:
+                            df_features[f"{col}_lag_{lag}"] = df_features[col].shift(
+                                lag
+                            )
 
         # 🆕 元の日付列を削除（もし含まれている場合）
         date_columns_to_remove = []
@@ -619,6 +638,8 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
             "bagging_fraction": 0.8,
             "bagging_freq": 5,
             "verbose": -1,
+            "seed": 42,  # 再現性のため追加
+            "min_child_samples": 20,  # 過学習防止
         }
 
         # モデル学習
@@ -638,11 +659,19 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         train_metrics = self._calculate_metrics(y_train, y_pred_train)
         test_metrics = self._calculate_metrics(y_test, y_pred_test)
 
-        # 特徴量重要度
-        feature_importance = list(
-            zip(X_train.columns, model.feature_importance(importance_type="gain"))
-        )
-        feature_importance.sort(key=lambda x: x[1], reverse=True)
+        # 特徴量重要度（複数の方法で取得）
+        importance_gain = model.feature_importance(importance_type="gain")
+        importance_split = model.feature_importance(importance_type="split")
+
+        # ゼロでない重要度を確保
+        feature_importance = []
+        for i, col in enumerate(X_train.columns):
+            # gainがゼロの場合はsplitを使用
+            importance = (
+                importance_gain[i] if importance_gain[i] > 0 else importance_split[i]
+            )
+            feature_importance.append((col, float(importance)))
+            feature_importance.sort(key=lambda x: x[1], reverse=True)
 
         return {
             "model": model,
@@ -669,12 +698,18 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
     ) -> Dict[str, Any]:
         """LightGBMが利用できない場合の代替モデル（線形回帰）"""
         from sklearn.linear_model import LinearRegression
+        from sklearn.preprocessing import StandardScaler
 
         # 特徴量とターゲットの分離
         X_train = train_data.drop(columns=[target_column])
         y_train = train_data[target_column]
         X_test = test_data.drop(columns=[target_column])
         y_test = test_data[target_column]
+
+        # 特徴量を標準化（係数の比較のため）
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
 
         # モデル学習
         model = LinearRegression()
@@ -688,9 +723,18 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
         train_metrics = self._calculate_metrics(y_train, y_pred_train)
         test_metrics = self._calculate_metrics(y_test, y_pred_test)
 
-        # 特徴量重要度（係数の絶対値）
-        feature_importance = list(zip(X_train.columns, np.abs(model.coef_)))
+        # 特徴量重要度（標準化された係数の絶対値）
+        feature_importance = []
+        for i, col in enumerate(X_train.columns):
+            importance = abs(model.coef_[i])
+            feature_importance.append((col, float(importance)))
+
         feature_importance.sort(key=lambda x: x[1], reverse=True)
+
+        # デバッグ出力
+        print(f"🔍 線形回帰の特徴量重要度（上位5個）:")
+        for feat, imp in feature_importance[:5]:
+            print(f"  {feat}: {imp:.4f}")
 
         return {
             "model": model,
@@ -1232,6 +1276,7 @@ class TimeSeriesAnalyzer(BaseAnalyzer):
                     content = meta.metadata_content
                     model_metrics = content.get("metrics", {})
                     feature_importance = content.get("feature_importance", [])
+                    print(f"🔍 保存する特徴量重要度: {feature_importance}")
                     target_column = content.get("forecast_parameters", {}).get(
                         "target_column", ""
                     )

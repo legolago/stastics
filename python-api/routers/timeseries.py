@@ -727,3 +727,121 @@ async def download_feature_importance(session_id: int, db: Session = Depends(get
             status_code=500,
             detail=f"特徴量重要度CSV出力中にエラーが発生しました: {str(e)}",
         )
+
+
+# timeseries.py（FastAPIルーター）に追加
+
+
+@router.get("/sessions")
+async def get_timeseries_sessions(
+    user_id: str = Query("default", description="ユーザーID"),
+    limit: int = Query(50, description="取得件数"),
+    offset: int = Query(0, description="オフセット"),
+    search: Optional[str] = Query(None, description="検索クエリ"),
+    db: Session = Depends(get_db),
+):
+    """時系列分析のセッション一覧を取得"""
+    try:
+        from models import AnalysisSession
+        from sqlalchemy import or_, and_, text
+
+        print(f"🔍 時系列分析セッション一覧取得開始")
+        print(
+            f"Parameters: user_id={user_id}, limit={limit}, offset={offset}, search={search}"
+        )
+
+        # ベースクエリ（時系列分析のみ）
+        query = db.query(AnalysisSession).filter(
+            and_(
+                AnalysisSession.user_id == user_id,
+                AnalysisSession.analysis_type == "timeseries",
+            )
+        )
+
+        # 検索条件を追加
+        if search:
+            search_filter = or_(
+                AnalysisSession.session_name.ilike(f"%{search}%"),
+                AnalysisSession.original_filename.ilike(f"%{search}%"),
+                AnalysisSession.description.ilike(f"%{search}%"),
+            )
+            query = query.filter(search_filter)
+
+        # 結果取得
+        sessions = (
+            query.order_by(AnalysisSession.analysis_timestamp.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+        print(f"📊 取得されたセッション数: {len(sessions)}")
+
+        # レスポンス形式に変換
+        sessions_data = []
+        for session in sessions:
+            # タグ情報を取得（ARRAY型のtagsカラムを優先使用）
+            tags = []
+            try:
+                # analysis_sessionsテーブルのtagsカラム（ARRAY型）を使用
+                if hasattr(session, "tags") and session.tags:
+                    tags = list(session.tags)  # PostgreSQL ARRAYをPythonリストに変換
+
+                # もしARRAY型が空なら、session_tagsテーブルからも確認
+                if not tags:
+                    tag_result = db.execute(
+                        text(
+                            "SELECT tag FROM session_tags WHERE session_id = :session_id"
+                        ),
+                        {"session_id": session.id},
+                    ).fetchall()
+                    tags = [row[0] for row in tag_result if row[0]]
+
+            except Exception as tag_error:
+                print(
+                    f"⚠️ セッション{session.id}のタグ取得エラー（スキップ）: {tag_error}"
+                )
+                tags = []
+
+            session_data = {
+                "session_id": session.id,
+                "session_name": session.session_name,
+                "description": getattr(session, "description", "") or "",
+                "filename": session.original_filename,
+                "analysis_type": session.analysis_type,
+                "analysis_timestamp": (
+                    session.analysis_timestamp.isoformat()
+                    if hasattr(session, "analysis_timestamp")
+                    and session.analysis_timestamp
+                    else None
+                ),
+                "user_id": session.user_id,
+                "row_count": getattr(session, "row_count", 0) or 0,
+                "column_count": getattr(session, "column_count", 0) or 0,
+                "tags": tags,
+                # 時系列分析特有のフィールド
+                "dimension_1_contribution": float(
+                    getattr(session, "dimension_1_contribution", 0) or 0
+                ),
+                "dimensions_count": getattr(session, "dimensions_count", 1) or 1,
+            }
+            sessions_data.append(session_data)
+
+        response_data = {
+            "success": True,
+            "data": sessions_data,
+            "total": len(sessions_data),
+            "offset": offset,
+            "limit": limit,
+        }
+
+        print(f"✅ 時系列分析セッション一覧取得完了: {len(sessions_data)}件")
+        return response_data
+
+    except Exception as e:
+        print(f"❌ 時系列分析セッション取得エラー: {str(e)}")
+        import traceback
+
+        print(f"詳細:\n{traceback.format_exc()}")
+
+        return {"success": False, "error": str(e), "data": []}

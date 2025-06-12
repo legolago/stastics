@@ -105,3 +105,58 @@ export async function GET(
     );
   }
 }
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { sessionId: string } }
+) {
+  try {
+    const sessionId = params.sessionId;
+    
+    // セッションIDの検証
+    if (!sessionId || isNaN(Number(sessionId))) {
+      return NextResponse.json(
+        { error: '無効なセッションIDです' },
+        { status: 400 }
+      );
+    }
+    
+    const fastApiUrl = process.env.FASTAPI_URL || process.env.PYTHON_API_URL || 'http://python-api:8000';
+    console.log(`🗑️ Deleting timeseries session ${sessionId} from:`, fastApiUrl);
+    
+    const response = await fetch(`${fastApiUrl}/api/timeseries/sessions/${sessionId}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ FastAPI session delete error:', errorText);
+      
+      if (response.status === 404) {
+        return NextResponse.json(
+          { error: 'セッションが見つかりません' },
+          { status: 404 }
+        );
+      }
+      
+      return NextResponse.json(
+        { error: 'セッションの削除に失敗しました', details: errorText },
+        { status: response.status }
+      );
+    }
+
+    console.log(`✅ Timeseries session ${sessionId} deleted successfully`);
+    
+    return NextResponse.json({ success: true, message: 'セッションが削除されました' });
+    
+  } catch (error) {
+    console.error('❌ Timeseries session delete error:', error);
+    return NextResponse.json(
+      { 
+        success: false,
+        error: 'セッション削除中にエラーが発生しました',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -163,57 +163,34 @@ export default function TimeSeriesPage() {
       const params = new URLSearchParams({
         userId: 'default',
         limit: '50',
-        offset: '0',
-        analysis_type: 'timeseries' // 明示的に時系列分析を指定
+        offset: '0'
       });
 
       if (searchQuery) {
         params.append('search', searchQuery);
       }
 
-      console.log('🔍 Timeseries sessions request:', `/api/sessions?${params.toString()}`);
+      // 時系列分析専用のAPIエンドポイントを使用
+      console.log('🔍 TimeSeries sessions request:', `/api/timeseries/sessions?${params.toString()}`);
       
-      const response = await fetch(`/api/sessions?${params.toString()}`);
+      const response = await fetch(`/api/timeseries/sessions?${params.toString()}`);
       if (!response.ok) {
         throw new Error(`API Error: ${response.status}`);
       }
       const data = await response.json();
+      
       console.log('📊 API Response:', {
         totalSessions: data.data?.length || 0,
-        types: data.data?.map((s: any) => s.analysis_type)
+        firstSession: data.data?.[0]
       });
 
       if (data.success) {
-        const allSessions = Array.isArray(data.data) ? data.data : [];
+        const timeseriesSessions = Array.isArray(data.data) ? data.data : [];
         
-        // analysis_typeの大文字小文字を考慮したフィルタリング
-        const timeseriesSessionsOnly = allSessions.filter(session => {
-          const sessionType = session.analysis_type?.toLowerCase();
-          const isTimeSeries = sessionType === 'timeseries';
-          
-          if (!isTimeSeries) {
-            console.warn(`⚠️ 時系列分析以外のセッションを除外: ID=${session.session_id}, タイプ=${sessionType}`);
-          }
-          
-          return isTimeSeries;
-        });
-        
-        console.log(`✅ Filtered sessions: ${allSessions.length} → ${timeseriesSessionsOnly.length} TimeSeries only)`);
-        
-        // デバッグ: 分析タイプ別カウント
-        const typeCounts = allSessions.reduce((acc: Record<string, number>, session) => {
-          const type = session.analysis_type || 'undefined';
-          acc[type] = (acc[type] || 0) + 1;
-          return acc;
-        }, {});
+        console.log(`✅ TimeSeries sessions loaded: ${timeseriesSessions.length}件`);
+        setSessions(timeseriesSessions);
 
-        console.log('📈 Session types found:', typeCounts);
-        console.log(`✅ フィルタリング結果: ${allSessions.length}件 → ${timeseriesSessionsOnly.length}件（時系列分析のみ）`);
-        
-        setSessions(timeseriesSessionsOnly);
-
-        // セッションが0件の場合の処理
-        if (timeseriesSessionsOnly.length === 0) {
+        if (timeseriesSessions.length === 0) {
           console.log('⚠️ 時系列分析のセッションが見つかりませんでした');
         }
 
@@ -229,167 +206,169 @@ export default function TimeSeriesPage() {
     }
   };
 
-  // セッション詳細を取得
-  const fetchSessionDetail = async (sessionId: number) => {
-    try {
-      console.log('🔍 時系列分析セッション詳細取得開始:', sessionId);
-      setError(null);
-      
-      const response = await fetch(`/api/timeseries/sessions/${sessionId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json'
+// セッション詳細を取得
+const fetchSessionDetail = async (sessionId: number) => {
+  try {
+    console.log('🔍 時系列分析セッション詳細取得開始:', sessionId);
+    setError(null);
+    
+    // Next.js APIルート経由でFastAPIを呼び出し
+    const response = await fetch(`/api/timeseries/sessions/${sessionId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.success) {
+      throw new Error(data.error || 'セッション詳細の取得に失敗しました');
+    }
+
+    const pythonResponse = data.data || {};
+    console.log('📥 Timeseries session detail response:', pythonResponse);
+
+    // レスポンス構造の詳細ログ
+    console.log('🔍 Python response structure:', {
+      keys: Object.keys(pythonResponse),
+      sessionInfo: pythonResponse.session_info ? Object.keys(pythonResponse.session_info) : null,
+      analysisData: pythonResponse.analysis_data ? Object.keys(pythonResponse.analysis_data) : null,
+      visualization: pythonResponse.visualization ? Object.keys(pythonResponse.visualization) : null,
+    });
+
+    // 予測データの取得
+    let predictions: TimeSeriesPrediction[] = [];
+    let actualValues: TimeSeriesActualValue[] = [];
+    let futurePredictions: TimeSeriesForecast[] = [];
+
+    if (pythonResponse.analysis_data) {
+      predictions = pythonResponse.analysis_data.predictions || [];
+      actualValues = pythonResponse.analysis_data.actual_values || [];
+      futurePredictions = pythonResponse.analysis_data.future_predictions || [];
+    }
+
+    // モデル性能指標の取得
+    let modelMetrics: TimeSeriesModelMetrics = {
+      train: { rmse: 0, mae: 0, r2: 0, mape: 0 },
+      test: { rmse: 0, mae: 0, r2: 0, mape: 0 },
+      r2_score: 0,
+      rmse: 0,
+      mae: 0,
+    };
+    if (pythonResponse.analysis_data?.model_metrics) {
+      modelMetrics = pythonResponse.analysis_data.model_metrics;
+    }
+
+    // 特徴量重要度の取得
+    let featureImportance: [string, number][] = [];
+    if (pythonResponse.analysis_data?.feature_importance) {
+      featureImportance = pythonResponse.analysis_data.feature_importance;
+    }
+
+    // 時系列情報の取得
+    let timeseriesInfo: TimeSeriesInfo = {
+      start_date: '',
+      end_date: '',
+      frequency: 'Unknown',
+      trend: '不明'
+    };
+    if (pythonResponse.analysis_data?.timeseries_info) {
+      timeseriesInfo = pythonResponse.analysis_data.timeseries_info;
+    }
+
+    // データ情報の取得
+    let dataInfo: TimeSeriesDataInfo = {
+      total_samples: 0,
+      train_samples: 0,
+      test_samples: 0,
+      feature_count: 0,
+      target_column: '',
+      feature_columns: []
+    };
+    if (pythonResponse.analysis_data?.data_info) {
+      dataInfo = pythonResponse.analysis_data.data_info;
+    }
+
+    // プロット画像の取得
+    let plotImage = '';
+    if (pythonResponse.visualization?.plot_image) {
+      plotImage = pythonResponse.visualization.plot_image;
+    } else if (pythonResponse.plot_image) {
+      plotImage = pythonResponse.plot_image;
+    }
+
+    // 時系列分析結果への型安全な変換処理
+    const analysisResult: TimeSeriesAnalysisResult = {
+      success: true,
+      session_id: pythonResponse.session_info?.session_id || sessionId,
+      session_name: pythonResponse.session_info?.session_name || '',
+      analysis_type: 'timeseries',
+      plot_base64: plotImage,
+      data: {
+        model_type: pythonResponse.analysis_data?.model_type || 'lightgbm',
+        target_column: dataInfo.target_column,
+        feature_columns: dataInfo.feature_columns,
+        forecast_periods: pythonResponse.analysis_data?.forecast_periods || 30,
+        model_metrics: modelMetrics,
+        feature_importance: featureImportance,
+        predictions: predictions,
+        actual_values: actualValues,
+        future_predictions: futurePredictions,
+        timeseries_info: timeseriesInfo,
+        data_info: dataInfo,
+        coordinates: {
+          actual: actualValues.map(av => ({ timestamp: av.timestamp, value: av.value })),
+          predictions: predictions.map(p => ({ 
+            timestamp: p.timestamp, 
+            predicted: p.predicted_value, 
+            actual: p.actual_value || 0, 
+            residual: p.residual || 0 
+          })),
+          forecast: futurePredictions.map(fp => ({ timestamp: fp.timestamp, predicted: fp.predicted_value }))
         }
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
-      
-      if (!data.success) {
-        throw new Error(data.error || 'セッション詳細の取得に失敗しました');
-      }
-
-      const pythonResponse = data.data || {};
-      console.log('📥 Timeseries session detail response:', pythonResponse);
-
-      // レスポンス構造の詳細ログ
-      console.log('🔍 Python response structure:', {
-        keys: Object.keys(pythonResponse),
-        sessionInfo: pythonResponse.session_info ? Object.keys(pythonResponse.session_info) : null,
-        analysisData: pythonResponse.analysis_data ? Object.keys(pythonResponse.analysis_data) : null,
-        visualization: pythonResponse.visualization ? Object.keys(pythonResponse.visualization) : null,
-      });
-
-      // 予測データの取得
-      let predictions: TimeSeriesPrediction[] = [];
-      let actualValues: TimeSeriesActualValue[] = [];
-      let futureePredictions: TimeSeriesForecast[] = [];
-
-      if (pythonResponse.analysis_data) {
-        predictions = pythonResponse.analysis_data.predictions || [];
-        actualValues = pythonResponse.analysis_data.actual_values || [];
-        futureePredictions = pythonResponse.analysis_data.future_predictions || [];
-      }
-
-      // モデル性能指標の取得
-      let modelMetrics: TimeSeriesModelMetrics = {
-        train: { rmse: 0, mae: 0, r2: 0, mape: 0 },
-        test: { rmse: 0, mae: 0, r2: 0, mape: 0 },
-        r2_score: 0,
-        rmse: 0,
-        mae: 0,
-      };
-      if (pythonResponse.analysis_data?.model_metrics) {
-        modelMetrics = pythonResponse.analysis_data.model_metrics;
-      }
-
-      // 特徴量重要度の取得
-      let featureImportance: [string, number][] = [];
-      if (pythonResponse.analysis_data?.feature_importance) {
-        featureImportance = pythonResponse.analysis_data.feature_importance;
-      }
-
-      // 時系列情報の取得
-      let timeseriesInfo: TimeSeriesInfo = {
-        start_date: '',
-        end_date: '',
-        frequency: 'Unknown',
-        trend: '不明'
-      };
-      if (pythonResponse.analysis_data?.timeseries_info) {
-        timeseriesInfo = pythonResponse.analysis_data.timeseries_info;
-      }
-
-      // データ情報の取得
-      let dataInfo: TimeSeriesDataInfo = {
-        total_samples: 0,
-        train_samples: 0,
-        test_samples: 0,
-        feature_count: 0,
-        target_column: '',
-        feature_columns: []
-      };
-      if (pythonResponse.analysis_data?.data_info) {
-        dataInfo = pythonResponse.analysis_data.data_info;
-      }
-
-      // プロット画像の取得
-      let plotImage = '';
-      if (pythonResponse.visualization?.plot_image) {
-        plotImage = pythonResponse.visualization.plot_image;
-      } else if (pythonResponse.plot_image) {
-        plotImage = pythonResponse.plot_image;
-      }
-
-      // 時系列分析結果への型安全な変換処理
-      const analysisResult: TimeSeriesAnalysisResult = {
-        success: true,
+      },
+      metadata: {
+        session_name: pythonResponse.session_info?.session_name || '',
+        filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.filename || '',
+        rows: pythonResponse.metadata?.rows || pythonResponse.session_info?.row_count || 0,
+        columns: pythonResponse.metadata?.columns || pythonResponse.session_info?.column_count || 0,
+        target_column: dataInfo.target_column,
+        feature_columns: dataInfo.feature_columns,
+      },
+      session_info: {
         session_id: pythonResponse.session_info?.session_id || sessionId,
         session_name: pythonResponse.session_info?.session_name || '',
+        description: pythonResponse.session_info?.description || '',
+        tags: pythonResponse.session_info?.tags || [],
+        analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
+        filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.filename || '',
         analysis_type: 'timeseries',
-        plot_base64: plotImage,
-        data: {
-          model_type: pythonResponse.analysis_data?.model_type || 'lightgbm',
-          target_column: dataInfo.target_column,
-          feature_columns: dataInfo.feature_columns,
-          forecast_periods: pythonResponse.analysis_data?.forecast_periods || 30,
-          model_metrics: modelMetrics,
-          feature_importance: featureImportance,
-          predictions: predictions,
-          actual_values: actualValues,
-          future_predictions: futureePredictions,
-          timeseries_info: timeseriesInfo,
-          data_info: dataInfo,
-          coordinates: {
-            actual: actualValues.map(av => ({ timestamp: av.timestamp, value: av.value })),
-            predictions: predictions.map(p => ({ 
-              timestamp: p.timestamp, 
-              predicted: p.predicted_value, 
-              actual: p.actual_value || 0, 
-              residual: p.residual || 0 
-            })),
-            forecast: futureePredictions.map(fp => ({ timestamp: fp.timestamp, predicted: fp.predicted_value }))
-          }
-        },
-        metadata: {
-          session_name: pythonResponse.session_info?.session_name || '',
-          filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.filename || '',
-          rows: pythonResponse.metadata?.rows || pythonResponse.session_info?.row_count || 0,
-          columns: pythonResponse.metadata?.columns || pythonResponse.session_info?.column_count || 0,
-          target_column: dataInfo.target_column,
-          feature_columns: dataInfo.feature_columns,
-        },
-        session_info: {
-          session_id: pythonResponse.session_info?.session_id || sessionId,
-          session_name: pythonResponse.session_info?.session_name || '',
-          description: pythonResponse.session_info?.description || '',
-          tags: pythonResponse.session_info?.tags || [],
-          analysis_timestamp: pythonResponse.session_info?.analysis_timestamp || '',
-          filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.filename || '',
-          analysis_type: 'timeseries',
-          row_count: pythonResponse.metadata?.rows || pythonResponse.session_info?.row_count || 0,
-          column_count: pythonResponse.metadata?.columns || pythonResponse.session_info?.column_count || 0,
-        }
-      };
+        row_count: pythonResponse.metadata?.rows || pythonResponse.session_info?.row_count || 0,
+        column_count: pythonResponse.metadata?.columns || pythonResponse.session_info?.column_count || 0,
+      }
+    };
 
-      console.log('📊 Building TimeSeries analysis result:', analysisResult);
-      setResult(analysisResult);
-      console.log('✅ TimeSeries session details loaded successfully');
+    console.log('📊 Building TimeSeries analysis result:', analysisResult);
+    setResult(analysisResult);
+    console.log('✅ TimeSeries session details loaded successfully');
 
-    } catch (error) {
-      console.error('❌ 時系列分析セッション詳細取得エラー:', error);
-      setError(error instanceof Error ? error.message : 'セッション詳細の取得中にエラーが発生しました');
-    }
-  };
+  } catch (error) {
+    console.error('❌ 時系列分析セッション詳細取得エラー:', error);
+    setError(error instanceof Error ? error.message : 'セッション詳細の取得中にエラーが発生しました');
+  }
+};
 
   // セッションを削除
   const deleteSession = async (sessionId: number) => {
     if (!confirm('このセッションを削除しますか？')) return;
 
     try {
+      // 既存の汎用削除APIを使用（[id]パラメータ）
       const response = await fetch(`/api/sessions/${sessionId}`, {
         method: 'DELETE'
       });
@@ -415,6 +394,7 @@ export default function TimeSeriesPage() {
     try {
       console.log('Downloading original CSV for session:', sessionId);
       
+      // 既存の汎用CSV APIを使用（[id]パラメータ）
       const response = await fetch(`/api/sessions/${sessionId}/csv`);
       if (!response.ok) {
         throw new Error('ダウンロードに失敗しました');
@@ -448,6 +428,7 @@ export default function TimeSeriesPage() {
     try {
       console.log('Downloading plot image for session:', sessionId);
       
+      // 既存の汎用画像APIを使用（[id]パラメータ）
       const response = await fetch(`/api/sessions/${sessionId}/image`);
       if (!response.ok) {
         throw new Error('ダウンロードに失敗しました');
