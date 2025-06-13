@@ -261,10 +261,10 @@ export default function RFMAnalysisPage() {
     }
   };
 
-  // 🔧 修正: セッション詳細を取得
+  // 🔧 修正: セッション詳細を取得（時系列分析の手法を参考に改善）
   const fetchSessionDetail = async (sessionId: number) => {
     try {
-      setError(null); // エラーをクリア
+      setError(null);
       console.log(`🔍 セッション詳細を取得中: ${sessionId}`);
       
       const response = await fetch(`/api/rfm/sessions/${sessionId}`);
@@ -293,47 +293,89 @@ export default function RFMAnalysisPage() {
       const responseText = await response.text();
       console.log('📄 Session Detail Response Length:', responseText.length);
 
-      let responseData;
+      let pythonResponse;
       try {
-        responseData = JSON.parse(responseText);
+        pythonResponse = JSON.parse(responseText);
       } catch (parseError) {
         console.error('❌ JSON Parse Error:', parseError);
         throw new Error('セッション詳細データの解析に失敗しました');
       }
 
-      console.log('📊 Session Detail Data:', {
-        success: responseData.success,
-        hasData: responseData.has_data,
-        customerCount: responseData.customer_count || 0,
-        hasPlotData: !!(responseData.plot_base64 || responseData.plot_image)
+      // 🔧 修正: 時系列分析と同じ手法でデータ構造を詳細にログ出力
+      console.log('🔍 Python response structure:', {
+        keys: Object.keys(pythonResponse),
+        success: pythonResponse.success,
+        sessionInfo: pythonResponse.session_info ? Object.keys(pythonResponse.session_info) : null,
+        analysisData: pythonResponse.analysis_data ? Object.keys(pythonResponse.analysis_data) : null,
+        visualization: pythonResponse.visualization ? Object.keys(pythonResponse.visualization) : null,
+        hasData: pythonResponse.has_data,
+        customerCount: pythonResponse.customer_count
       });
 
-      if (!responseData || !responseData.success) {
-        throw new Error(responseData?.error || 'セッション詳細の取得に失敗しました');
+      if (!pythonResponse || !pythonResponse.success) {
+        throw new Error(pythonResponse?.error || 'セッション詳細の取得に失敗しました');
       }
 
-      // プロット画像データの統一処理
-      const plotData = responseData.plot_base64 || responseData.plot_image || '';
+      // 🔧 修正: analysis_dataからの統計データ取得（時系列分析と同じ手法）
+      const analysisData = pythonResponse.analysis_data || {};
+      
+      // RFM統計データの取得
+      let rfmStats = {};
+      if (analysisData.rfm_stats) {
+        rfmStats = analysisData.rfm_stats;
+      } else if (pythonResponse.rfm_statistics) {
+        rfmStats = pythonResponse.rfm_statistics;
+      }
 
-      // セッション詳細を状態にセット
+      // セグメント数の取得
+      let segmentCounts = {};
+      if (analysisData.segment_counts) {
+        segmentCounts = analysisData.segment_counts;
+      } else if (pythonResponse.segment_counts) {
+        segmentCounts = pythonResponse.segment_counts;
+      }
+
+      // プロット画像の取得（時系列分析と同じ手法）
+      let plotImage = '';
+      if (pythonResponse.visualization?.plot_image) {
+        plotImage = pythonResponse.visualization.plot_image;
+      } else if (pythonResponse.plot_image) {
+        plotImage = pythonResponse.plot_image;
+      } else if (analysisData.plot_base64) {
+        plotImage = analysisData.plot_base64;
+      } else if (pythonResponse.plot_base64) {
+        plotImage = pythonResponse.plot_base64;
+      }
+
+      console.log('📊 Data extraction results:', {
+        hasRfmStats: !!rfmStats && Object.keys(rfmStats).length > 0,
+        rfmStatsKeys: rfmStats ? Object.keys(rfmStats) : [],
+        hasSegmentCounts: !!segmentCounts && Object.keys(segmentCounts).length > 0,
+        segmentCountsKeys: segmentCounts ? Object.keys(segmentCounts) : [],
+        hasPlotImage: !!plotImage,
+        plotImageLength: plotImage ? plotImage.length : 0,
+        totalCustomers: analysisData.total_customers || pythonResponse.total_customers || 0
+      });
+
+      // セッション詳細を状態にセット（時系列分析と同じ構造）
       const sessionDetail: RFMSessionDetail = {
-        session_id: responseData.session_id,
-        success: responseData.success,
-        has_data: responseData.has_data || false,
-        customer_count: responseData.customer_count || 0,
-        session_name: responseData.session_name || '',
-        analysis_type: responseData.analysis_type || 'rfm',
-        filename: responseData.filename || '',
-        description: responseData.description || '',
-        analysis_date: responseData.analysis_date || '',
-        row_count: responseData.row_count || 0,
-        column_count: responseData.column_count || 0,
-        total_customers: responseData.total_customers || responseData.customer_count || 0,
-        rfm_divisions: responseData.rfm_divisions || 3,
-        customer_data: responseData.customer_data || [],
-        segment_counts: responseData.segment_counts || {},
-        rfm_statistics: responseData.rfm_statistics || {},
-        plot_base64: plotData,
+        session_id: pythonResponse.session_info?.session_id || sessionId,
+        success: pythonResponse.success,
+        has_data: pythonResponse.has_data || (analysisData.total_customers > 0),
+        customer_count: pythonResponse.customer_count || analysisData.total_customers || 0,
+        session_name: pythonResponse.session_info?.session_name || '',
+        analysis_type: 'rfm',
+        filename: pythonResponse.session_info?.filename || pythonResponse.metadata?.filename || '',
+        description: pythonResponse.session_info?.description || '',
+        analysis_date: pythonResponse.session_info?.analysis_date || analysisData.analysis_date || '',
+        row_count: pythonResponse.metadata?.rows || pythonResponse.session_info?.row_count || 0,
+        column_count: pythonResponse.metadata?.columns || pythonResponse.session_info?.column_count || 0,
+        total_customers: analysisData.total_customers || pythonResponse.total_customers || 0,
+        rfm_divisions: analysisData.rfm_divisions || pythonResponse.rfm_divisions || 3,
+        customer_data: analysisData.customer_data || pythonResponse.customer_data || [],
+        segment_counts: segmentCounts,
+        rfm_statistics: rfmStats,
+        plot_base64: plotImage,
         download_urls: {
           customers: `/api/rfm/download/${sessionId}/customers`,
           segments: `/api/rfm/download/${sessionId}/segments`,
@@ -346,7 +388,10 @@ export default function RFMAnalysisPage() {
       console.log('✅ セッション詳細取得成功:', {
         sessionId: sessionDetail.session_id,
         customerCount: sessionDetail.customer_count,
-        hasPlotData: !!sessionDetail.plot_base64
+        hasPlotData: !!sessionDetail.plot_base64,
+        hasRfmStats: !!sessionDetail.rfm_statistics && Object.keys(sessionDetail.rfm_statistics).length > 0,
+        rfmStatsKeys: sessionDetail.rfm_statistics ? Object.keys(sessionDetail.rfm_statistics) : [],
+        finalSegmentCounts: Object.keys(sessionDetail.segment_counts)
       });
 
     } catch (error) {
@@ -531,7 +576,7 @@ export default function RFMAnalysisPage() {
     }
   };
 
-  // 🔧 修正: メインのアップロード処理
+  // 🔧 修正: メインのアップロード処理（エラーハンドリング改善）
   const handleUpload = async () => {
     // バリデーション
     if (!file) {
@@ -583,6 +628,28 @@ export default function RFMAnalysisPage() {
       if (!response.ok) {
         const errorText = await response.text();
         console.error('❌ RFM分析エラー:', errorText);
+        
+        // 🔧 修正: EPIPEエラーの場合は成功として扱う
+        if (errorText.includes('EPIPE') || errorText.includes('fetch failed')) {
+          console.log('⚠️ 接続エラーが発生しましたが、分析は完了している可能性があります。セッション一覧を更新します。');
+          
+          // セッション一覧を更新して最新の分析結果を確認
+          await fetchSessions();
+          
+          // 最新のセッションを自動で表示
+          setTimeout(async () => {
+            if (sessions.length > 0) {
+              const latestSession = sessions[0]; // セッションは新しい順に並んでいると仮定
+              console.log('📊 最新セッションを自動表示:', latestSession.session_id);
+              await fetchSessionDetail(latestSession.session_id);
+              setActiveTab('history');
+            }
+          }, 1000);
+          
+          setError('⚠️ 通信エラーが発生しましたが、分析は正常に完了した可能性があります。履歴タブで結果を確認してください。');
+          return;
+        }
+        
         throw new Error(`分析に失敗しました: ${response.statusText}`);
       }
 
@@ -666,6 +733,54 @@ export default function RFMAnalysisPage() {
       '離脱顧客': 'bg-gray-200 text-gray-600 border-gray-300'
     };
     return colorMap[segment] || 'bg-gray-100 text-gray-800 border-gray-200';
+  };
+
+  const downloadImage = () => {
+  // 🔧 修正: getPlotImage()の代わりに直接プロット画像を取得
+    const plotData = result?.plot_base64 || sessionDetail?.plot_base64;
+    const plotImage = plotData ? `data:image/png;base64,${plotData}` : null;
+    
+    if (!plotImage) {
+      alert('ダウンロードする画像がありません');
+      return;
+    }
+
+    try {
+      // Base64データをBlobに変換
+      const base64Data = plotImage.replace(/^data:image\/png;base64,/, '');
+      const byteCharacters = atob(base64Data);
+      const byteNumbers = new Array(byteCharacters.length);
+      
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'image/png' });
+
+      // ダウンロード用のリンクを作成
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      
+      // ファイル名を生成
+      const sessionName = sessionDetail?.session_name || result?.metadata?.session_name || 'RFM分析';
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      link.download = `${sessionName}_RFM分析結果_${timestamp}.png`;
+      
+      // ダウンロード実行
+      document.body.appendChild(link);
+      link.click();
+      
+      // クリーンアップ
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      console.log('✅ 画像ダウンロード完了');
+    } catch (error) {
+      console.error('❌ 画像ダウンロードエラー:', error);
+      alert('画像のダウンロードに失敗しました');
+    }
   };
 
   return (
@@ -1236,6 +1351,24 @@ export default function RFMAnalysisPage() {
                     </svg>
                     セグメントCSV
                   </button>
+                  {/* 🔧 追加: 画像ダウンロードボタン */}
+                  {(() => {
+                    const plotData = result?.plot_base64 || sessionDetail?.plot_base64;
+                    return plotData && (
+                      <button
+                        onClick={downloadImage}
+                        className="bg-purple-600 text-white px-3 py-2 rounded-lg hover:bg-purple-700 text-sm flex items-center transition-colors"
+                      >
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        分析結果画像
+                      </button>
+                    );
+                  })()}
                 </>
               )}
             </div>
@@ -1272,7 +1405,7 @@ export default function RFMAnalysisPage() {
               </dl>
             </div>
 
-            {/* 他の統計カードも同様に修正 */}
+            {/* 🔧 修正: 統計データの正しいパス指定 */}
             <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
               <h3 className="font-semibold text-green-900 mb-3 flex items-center">
                 <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1283,15 +1416,37 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-green-700">平均:</dt>
-                  <dd className="font-medium text-green-900">計算中...</dd>
+                  <dd className="font-medium text-green-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.recency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.recency ||
+                                   result?.rfm_stats?.recency;
+                      
+                      return stats?.mean ? `${formatNumber(stats.mean, 1)}日` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-green-700">最小:</dt>
-                  <dd className="font-medium text-green-900">計算中...</dd>
+                  <dd className="font-medium text-green-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.recency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.recency ||
+                                   result?.rfm_stats?.recency;
+                      return stats?.min !== undefined ? `${Math.round(stats.min)}日` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-green-700">最大:</dt>
-                  <dd className="font-medium text-green-900">計算中...</dd>
+                  <dd className="font-medium text-green-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.recency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.recency ||
+                                   result?.rfm_stats?.recency;
+                      return stats?.max !== undefined ? `${Math.round(stats.max)}日` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
               </dl>
             </div>
@@ -1306,15 +1461,36 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">平均:</dt>
-                  <dd className="font-medium text-yellow-900">計算中...</dd>
+                  <dd className="font-medium text-yellow-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.frequency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.frequency ||
+                                   result?.rfm_stats?.frequency;
+                      return stats?.mean ? `${formatNumber(stats.mean, 1)}回` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">最小:</dt>
-                  <dd className="font-medium text-yellow-900">計算中...</dd>
+                  <dd className="font-medium text-yellow-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.frequency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.frequency ||
+                                   result?.rfm_stats?.frequency;
+                      return stats?.min !== undefined ? `${Math.round(stats.min)}回` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">最大:</dt>
-                  <dd className="font-medium text-yellow-900">計算中...</dd>
+                  <dd className="font-medium text-yellow-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.frequency || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.frequency ||
+                                   result?.rfm_stats?.frequency;
+                      return stats?.max !== undefined ? `${Math.round(stats.max)}回` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
               </dl>
             </div>
@@ -1329,15 +1505,36 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-purple-700">平均:</dt>
-                  <dd className="font-medium text-purple-900">計算中...</dd>
+                  <dd className="font-medium text-purple-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.monetary || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.monetary ||
+                                   result?.rfm_stats?.monetary;
+                      return stats?.mean ? `¥${Math.round(stats.mean).toLocaleString()}` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-purple-700">最小:</dt>
-                  <dd className="font-medium text-purple-900">計算中...</dd>
+                  <dd className="font-medium text-purple-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.monetary || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.monetary ||
+                                   result?.rfm_stats?.monetary;
+                      return stats?.min !== undefined ? `¥${Math.round(stats.min).toLocaleString()}` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-purple-700">最大:</dt>
-                  <dd className="font-medium text-purple-900">計算中...</dd>
+                  <dd className="font-medium text-purple-900">
+                    {(() => {
+                      const stats = result?.data?.rfm_stats?.monetary || 
+                                   sessionDetail?.rfm_statistics?.rfm_stats?.monetary ||
+                                   result?.rfm_stats?.monetary;
+                      return stats?.max !== undefined ? `¥${Math.round(stats.max).toLocaleString()}` : '利用不可';
+                    })()}
+                  </dd>
                 </div>
               </dl>
             </div>
@@ -1389,7 +1586,8 @@ export default function RFMAnalysisPage() {
             </div>
           </div>
 
-          {/* プロット画像表示 */}
+          {/* 🔧 修正: プロット画像表示（時系列分析と同じ手法） */}
+          {/* 🔧 修正: プロット画像表示（時系列分析と同じ手法） */}
           <div className="mb-8">
             <h3 className="font-semibold mb-4 text-lg flex items-center">
               <svg className="w-6 h-6 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1400,6 +1598,12 @@ export default function RFMAnalysisPage() {
             
             {(() => {
               const plotData = result?.plot_base64 || sessionDetail?.plot_base64;
+              
+              console.log('🖼️ プロット画像データ確認:', {
+                hasResultPlot: !!result?.plot_base64,
+                hasSessionDetailPlot: !!sessionDetail?.plot_base64,
+                finalPlotLength: plotData?.length || 0
+              });
               
               if (!plotData) {
                 return (
@@ -1415,6 +1619,7 @@ export default function RFMAnalysisPage() {
                 );
               }
 
+              // 🔧 修正: 時系列分析と同じBase64データ処理
               const base64Data = plotData.startsWith('data:image/') ? 
                 plotData : 
                 `data:image/png;base64,${plotData}`;
@@ -1424,8 +1629,8 @@ export default function RFMAnalysisPage() {
                   <Image
                     src={base64Data}
                     alt="RFM分析プロット"
-                    width={1200}
-                    height={800}
+                    width={1600}
+                    height={1200}
                     className="w-full h-auto"
                     priority={true}
                     unoptimized={true}

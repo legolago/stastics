@@ -325,6 +325,27 @@ async def get_rfm_session_detail(
                 rfm_stats_data = meta.metadata_content
                 break
 
+        # 🔧 修正: plot_base64を最初に初期化
+        plot_base64 = ""
+
+        # メタデータからプロット画像を取得
+        if rfm_stats_data:
+            plot_base64 = rfm_stats_data.get("plot_base64", "")
+
+        # プロット画像がメタデータにない場合は可視化テーブルから取得
+        if not plot_base64:
+            from models import VisualizationData
+
+            viz_data = (
+                db.query(VisualizationData)
+                .filter(VisualizationData.session_id == session_id)
+                .first()
+            )
+            if viz_data and viz_data.image_base64:
+                plot_base64 = viz_data.image_base64
+
+        print(f"🖼️ プロット画像データ: {len(plot_base64)} 文字")
+
         # フロントエンドが期待する形式でレスポンスを構築
         session_detail = {
             "success": True,
@@ -365,9 +386,7 @@ async def get_rfm_session_detail(
                     else {}
                 ),
             },
-            "plot_base64": (
-                rfm_stats_data.get("plot_base64", "") if rfm_stats_data else ""
-            ),
+            "plot_base64": plot_base64,
             "download_urls": {
                 "customers": f"/api/rfm/download/{session_id}/customers",
                 "segments": f"/api/rfm/download/{session_id}/segments",
@@ -376,8 +395,6 @@ async def get_rfm_session_detail(
         }
 
         print(f"✅ セッション {session_id} の詳細データを取得完了")
-        print(f"🖼️ プロット画像データ: {len(session_detail['plot_base64'])} 文字")
-
         return JSONResponse(content=session_detail)
 
     except HTTPException:

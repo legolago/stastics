@@ -704,8 +704,8 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
                     image_type="correspondence_plot",  # デフォルト値を使用
                     image_base64=plot_base64,
                     image_size=len(plot_base64),
-                    width=1400,
-                    height=1100,
+                    width=1600,
+                    height=1200,
                     dpi=300,
                 )
                 db.add(visualization)
@@ -714,7 +714,9 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             # RFM特有のデータ保存
             if self.get_analysis_type() == "rfm":
                 self._save_customer_data(db, session_id, results)
-                self._save_rfm_metadata(db, session_id, results)
+                self._save_rfm_metadata(
+                    db, session_id, results, plot_base64
+                )  # 🔧 修正: plot_base64を渡す
 
             db.commit()
             print(f"✅ データベース保存完了: セッションID={session_id}")
@@ -726,7 +728,7 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             db.rollback()
             return 0  # エラー時は0を返す
 
-    def _save_rfm_metadata(self, db, session_id, results):
+    def _save_rfm_metadata(self, db, session_id, results, plot_base64=""):
         """RFM分析のメタデータを保存"""
         try:
             from models import AnalysisMetadata
@@ -743,7 +745,7 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
                 "analysis_date": results.get("analysis_date", ""),
                 "total_customers": results.get("total_customers", 0),
                 "rfm_divisions": results.get("rfm_divisions", 3),  # ✅ 追加
-                "plot_base64": results.get("plot_base64", ""),  # ✅ プロット画像を追加
+                "plot_base64": plot_base64,  # ✅ プロット画像を追加
             }
 
             metadata = AnalysisMetadata(
@@ -753,7 +755,7 @@ class RFMAnalysisAnalyzer(BaseAnalyzer):
             )
             db.add(metadata)
 
-            print("RFMメタデータ保存完了")
+            print(f"RFMメタデータ保存完了（プロット画像: {len(plot_base64)}文字）")
 
         except Exception as e:
             print(f"RFMメタデータ保存エラー: {e}")
