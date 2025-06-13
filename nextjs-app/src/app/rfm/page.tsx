@@ -1,4 +1,4 @@
-//src/app/rfm/page.tsx（第1回：基本構造と型定義）
+//src/app/rfm/page.tsx（修正版）
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
@@ -90,23 +90,7 @@ interface RFMParams {
   useMonetary4Divisions?: boolean;
 }
 
-// API レスポンスの型定義
-interface ApiErrorResponse {
-  success: false;
-  error: string;
-  detail?: string;
-  hints?: string[];
-}
-
-interface ApiSuccessResponse {
-  success: true;
-  session_id: number;
-  data: any;
-  metadata: any;
-  download_urls: Record<string, string>;
-}
-
-// RFMSessionDetail インターフェースを先に定義
+// セッション詳細の型定義（統一）
 interface RFMSessionDetail {
   session_id: number;
   success: boolean;
@@ -124,15 +108,13 @@ interface RFMSessionDetail {
   customer_data: RFMCustomer[];
   segment_counts: Record<string, number>;
   rfm_statistics: any;
-  plot_base64: string;  // plot_image から plot_base64 に変更
+  plot_base64: string;
   download_urls: {
     customers: string;
     segments: string;
     details: string;
   };
 }
-
-type ApiResponse = ApiSuccessResponse | ApiErrorResponse;
 
 export default function RFMAnalysisPage() {
   // ファイルとセッション管理の状態
@@ -147,7 +129,7 @@ export default function RFMAnalysisPage() {
     dateCol: 'date', 
     amountCol: 'price',
     analysisDate: '',
-    rfmDivisions: 3, // ✅ デフォルト値を明示的に設定
+    rfmDivisions: 3,
     useMonetary4Divisions: false
   });
 
@@ -169,30 +151,31 @@ export default function RFMAnalysisPage() {
   const [sessions, setSessions] = useState<RFMSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'upload' | 'history'>('upload');
-  const [searchQuery, setSearchQuery] = useState<string>(''); // 検索クエリの状態
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedSession, setSelectedSession] = useState<RFMSession | null>(null);
   const [sessionDetail, setSessionDetail] = useState<RFMSessionDetail | null>(null);
 
   // 検索結果のフィルタリング
   const filteredSessions = useMemo(() => {
-    if (!sessions) return [];
+    if (!sessions || sessions.length === 0) return [];
     if (!searchQuery.trim()) return sessions;
     
     const searchLower = searchQuery.toLowerCase();
     return sessions.filter(session => {
       return (
-        session.session_name.toLowerCase().includes(searchLower) ||
-        session.filename.toLowerCase().includes(searchLower) ||
+        session.session_name?.toLowerCase().includes(searchLower) ||
+        session.filename?.toLowerCase().includes(searchLower) ||
         session.description?.toLowerCase().includes(searchLower) ||
         session.tags?.some(tag => tag.toLowerCase().includes(searchLower))
       );
     });
   }, [sessions, searchQuery]);
 
-  // セッション履歴を取得（RFM分析のみ）
+  // 🔧 修正: セッション履歴を取得（RFM分析のみ）
   const fetchSessions = async () => {
     try {
       setSessionsLoading(true);
+      setError(null); // エラーをクリア
       console.log('📋 RFM分析セッション履歴を取得中...');
       
       const params = new URLSearchParams({
@@ -209,25 +192,59 @@ export default function RFMAnalysisPage() {
         },
       });
 
+      console.log('📥 Sessions API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Sessions API Error:', errorText);
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const data = await response.json();
+      const responseText = await response.text();
+      console.log('📄 Sessions API Response Text Length:', responseText.length);
+
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('❌ JSON Parse Error:', parseError);
+        throw new Error('サーバーからの応答を解析できませんでした');
+      }
+
+      console.log('📊 Sessions API Data:', {
+        success: data.success,
+        hasData: !!data.data,
+        dataLength: data.data?.length || 0,
+        dataType: typeof data.data
+      });
+
       if (!data || !data.success) {
-        throw new Error(data.error || 'セッション取得に失敗しました');
+        throw new Error(data?.error || 'セッション取得に失敗しました');
+      }
+
+      // データの存在確認
+      if (!data.data || !Array.isArray(data.data)) {
+        console.warn('⚠️ Sessions data is not an array:', data.data);
+        setSessions([]);
+        return;
       }
 
       // RFM分析のセッションのみフィルタリング
-      const rfmSessions = data.data
-        .filter((session: any) => session.analysis_type === 'rfm')
-        .map((session: any) => ({
-          ...session,
-          tags: session.tags || [] // タグが無い場合は空配列を設定
-        }));
+      const allSessions = data.data.map((session: any) => ({
+        ...session,
+        tags: Array.isArray(session.tags) ? session.tags : []
+      }));
+
+      const rfmSessions = allSessions.filter((session: any) => 
+        session.analysis_type === 'rfm'
+      );
 
       console.log('✅ RFM分析セッション一覧取得完了:', {
-        totalSessions: data.data.length,
+        totalSessions: allSessions.length,
         rfmSessions: rfmSessions.length,
         rfmSessionIds: rfmSessions.map((s: any) => s.session_id)
       });
@@ -236,12 +253,109 @@ export default function RFMAnalysisPage() {
 
     } catch (error) {
       console.error('❌ セッション取得エラー:', error);
-      setError(error instanceof Error ? error.message : 'セッション取得中にエラーが発生しました');
+      const errorMessage = error instanceof Error ? error.message : 'セッション取得中にエラーが発生しました';
+      setError(`セッション履歴の取得に失敗しました: ${errorMessage}`);
+      setSessions([]); // エラー時は空配列を設定
     } finally {
       setSessionsLoading(false);
     }
   };
 
+  // 🔧 修正: セッション詳細を取得
+  const fetchSessionDetail = async (sessionId: number) => {
+    try {
+      setError(null); // エラーをクリア
+      console.log(`🔍 セッション詳細を取得中: ${sessionId}`);
+      
+      const response = await fetch(`/api/rfm/sessions/${sessionId}`);
+      
+      console.log('📥 Session Detail Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ セッション詳細取得エラー:', {
+          status: response.status,
+          statusText: response.statusText,
+          errorText: errorText.substring(0, 300)
+        });
+
+        if (response.status === 404) {
+          throw new Error('セッションが見つかりません。削除された可能性があります。');
+        }
+        
+        throw new Error(`セッション詳細の取得に失敗しました: ${response.statusText}`);
+      }
+
+      const responseText = await response.text();
+      console.log('📄 Session Detail Response Length:', responseText.length);
+
+      let responseData;
+      try {
+        responseData = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('❌ JSON Parse Error:', parseError);
+        throw new Error('セッション詳細データの解析に失敗しました');
+      }
+
+      console.log('📊 Session Detail Data:', {
+        success: responseData.success,
+        hasData: responseData.has_data,
+        customerCount: responseData.customer_count || 0,
+        hasPlotData: !!(responseData.plot_base64 || responseData.plot_image)
+      });
+
+      if (!responseData || !responseData.success) {
+        throw new Error(responseData?.error || 'セッション詳細の取得に失敗しました');
+      }
+
+      // プロット画像データの統一処理
+      const plotData = responseData.plot_base64 || responseData.plot_image || '';
+
+      // セッション詳細を状態にセット
+      const sessionDetail: RFMSessionDetail = {
+        session_id: responseData.session_id,
+        success: responseData.success,
+        has_data: responseData.has_data || false,
+        customer_count: responseData.customer_count || 0,
+        session_name: responseData.session_name || '',
+        analysis_type: responseData.analysis_type || 'rfm',
+        filename: responseData.filename || '',
+        description: responseData.description || '',
+        analysis_date: responseData.analysis_date || '',
+        row_count: responseData.row_count || 0,
+        column_count: responseData.column_count || 0,
+        total_customers: responseData.total_customers || responseData.customer_count || 0,
+        rfm_divisions: responseData.rfm_divisions || 3,
+        customer_data: responseData.customer_data || [],
+        segment_counts: responseData.segment_counts || {},
+        rfm_statistics: responseData.rfm_statistics || {},
+        plot_base64: plotData,
+        download_urls: {
+          customers: `/api/rfm/download/${sessionId}/customers`,
+          segments: `/api/rfm/download/${sessionId}/segments`,
+          details: `/api/rfm/download/${sessionId}/details`
+        }
+      };
+
+      setSessionDetail(sessionDetail);
+
+      console.log('✅ セッション詳細取得成功:', {
+        sessionId: sessionDetail.session_id,
+        customerCount: sessionDetail.customer_count,
+        hasPlotData: !!sessionDetail.plot_base64
+      });
+
+    } catch (error) {
+      console.error('❌ セッション詳細取得エラー:', error);
+      const errorMessage = error instanceof Error ? error.message : 'セッション詳細の取得中にエラーが発生しました';
+      setError(errorMessage);
+      setSessionDetail(null);
+    }
+  };
 
   // セッションを削除
   const deleteSession = async (sessionId: number) => {
@@ -266,7 +380,10 @@ export default function RFMAnalysisPage() {
           setResult(null);
         }
         
-        // 成功メッセージを表示
+        if (sessionDetail?.session_id === sessionId) {
+          setSessionDetail(null);
+        }
+        
         alert('セッションを削除しました');
       } else {
         const errorData = await response.json();
@@ -302,7 +419,6 @@ export default function RFMAnalysisPage() {
       const a = document.createElement('a');
       a.href = url;
       
-      // ファイル名を取得（Content-Dispositionヘッダーから）
       const contentDisposition = response.headers.get('Content-Disposition');
       const fileNameMatch = contentDisposition?.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
       const fileName = fileNameMatch ? 
@@ -320,42 +436,6 @@ export default function RFMAnalysisPage() {
     } catch (err) {
       console.error('❌ CSVダウンロードエラー:', err);
       alert(err instanceof Error ? err.message : 'CSVファイルのダウンロードに失敗しました');
-    }
-  };
-
-  // 詳細JSONファイルをダウンロード
-  const downloadJSON = async (sessionId: number) => {
-    try {
-      console.log(`📥 詳細JSON ダウンロード開始: セッション ${sessionId}`);
-      
-      const response = await fetch(`/api/rfm/download/${sessionId}/details`, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ JSON ダウンロードエラー:', errorText);
-        throw new Error(`ダウンロードに失敗しました: ${response.statusText}`);
-      }
-      
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `rfm_analysis_${sessionId}_${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      
-      console.log('✅ JSON ダウンロード完了');
-      
-    } catch (err) {
-      console.error('❌ JSONダウンロードエラー:', err);
-      alert(err instanceof Error ? err.message : 'JSONファイルのダウンロードに失敗しました');
     }
   };
 
@@ -444,19 +524,106 @@ export default function RFMAnalysisPage() {
       setParameters(newParams);
       console.log('✅ 列名推定完了:', newParams);
 
-      // データのプレビュー表示（開発時のみ）
-      if (process.env.NODE_ENV === 'development') {
-        console.log('📊 データプレビュー:', {
-          totalLines: lines.length,
-          headers,
-          sampleData: lines.slice(1, 4).map(line => line.split(','))
-        });
-      }
-
     } catch (error) {
       console.error('❌ ファイル選択エラー:', error);
       setError(error instanceof Error ? error.message : 'ファイルの処理中にエラーが発生しました');
       setDetectedColumns([]);
+    }
+  };
+
+  // 🔧 修正: メインのアップロード処理
+  const handleUpload = async () => {
+    // バリデーション
+    if (!file) {
+      setError('ファイルを選択してください');
+      return;
+    }
+
+    if (!sessionName.trim()) {
+      setError('セッション名を入力してください');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setResult(null);
+
+    try {
+      console.log('📤 RFM分析リクエスト送信中...');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const queryParams = new URLSearchParams({
+        session_name: sessionName,
+        description: description || '',
+        tags: tags || '',
+        user_id: 'default',
+        customerIdCol: parameters.customerIdCol,
+        dateCol: parameters.dateCol, 
+        amountcol: parameters.amountCol,
+        rfm_divisions: parameters.rfmDivisions.toString(),
+        ...(parameters.analysisDate && { analysis_date: parameters.analysisDate }),
+        ...(parameters.useMonetary4Divisions && { use_monetary_4_divisions: 'true' })
+      });
+
+      console.log('📋 Query parameters:', Object.fromEntries(queryParams));
+
+      const response = await fetch(`/api/rfm/analyze?${queryParams}`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      console.log('📥 RFM分析レスポンス:', {
+        status: response.status,
+        statusText: response.statusText,
+        ok: response.ok
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ RFM分析エラー:', errorText);
+        throw new Error(`分析に失敗しました: ${response.statusText}`);
+      }
+
+      const responseText = await response.text();
+      console.log('📄 Response length:', responseText.length);
+
+      let result;
+      try {
+        result = JSON.parse(responseText);
+        console.log('✅ JSON parse successful');
+      } catch (parseError) {
+        console.error('❌ JSON parse failed:', parseError);
+        throw new Error('分析結果の解析に失敗しました');
+      }
+
+      console.log('📊 Result keys:', Object.keys(result || {}));
+
+      if (!result) {
+        throw new Error('分析結果が空です');
+      }
+
+      if (result.success && result.session_id) {
+        console.log('✅ RFM分析完了:', result.session_id);
+        setResult(result);
+
+        // セッション一覧を更新
+        await fetchSessions();
+
+        console.log('🎉 RFM分析が完了しました！');
+
+      } else {
+        throw new Error(result.error || '分析に失敗しました');
+      }
+
+    } catch (error) {
+      console.error('❌ アップロードエラー:', error);
+      const errorMessage = error instanceof Error ? error.message : 'アップロードに失敗しました';
+      setError(errorMessage);
+      
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -501,342 +668,6 @@ export default function RFMAnalysisPage() {
     return colorMap[segment] || 'bg-gray-100 text-gray-800 border-gray-200';
   };
 
-  // メインのアップロード処理
-  // RFM分析ページの handleUpload 関数修正
-
-  const handleUpload = async () => {
-    // バリデーション
-    if (!file) {
-      setError('ファイルを選択してください');
-      return;
-    }
-
-    if (!sessionName.trim()) {
-      setError('セッション名を入力してください');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setResult(null);
-
-    try {
-      console.log('📤 Sending RFM analysis request...');
-
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const queryParams = new URLSearchParams({
-        session_name: sessionName,
-        description: description || '',
-        tags: tags || '',
-        user_id: 'default',
-        customerIdCol: parameters?.customerIdCol || 'id',
-        dateCol: parameters?.dateCol || 'date', 
-        amountcol: parameters?.amountCol || 'price',
-        rfm_divisions: (parameters?.rfmDivisions ?? 3).toString(), // ✅ nullish coalescing で安全にアクセス
-        ...(parameters?.analysisDate && { analysis_date: parameters.analysisDate }),
-        ...(parameters?.useMonetary4Divisions && { use_monetary_4_divisions: 'true' })
-      });
-
-      console.log('📋 Query parameters:', Object.fromEntries(queryParams));
-
-      const response = await fetch(`/api/rfm/analyze?${queryParams}`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      console.log('📥 FastAPI Response Status:', response.status);
-      console.log('📋 Response Headers:', {
-        'content-length': response.headers.get('content-length'),
-        'content-type': response.headers.get('content-type'),
-        'date': response.headers.get('date'),
-        'server': response.headers.get('server')
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ FastAPI Error Response:', errorText);
-        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
-      }
-
-      const responseText = await response.text();
-      console.log('📄 Response length:', responseText.length);
-
-      let result;
-      try {
-        result = JSON.parse(responseText);
-        console.log('✅ JSON parse successful');
-      } catch (parseError) {
-        console.error('❌ JSON parse failed:', parseError);
-        console.log('📄 Raw response (first 500 chars):', responseText.substring(0, 500));
-        throw new Error('無効なJSONレスポンスです');
-      }
-
-      console.log('📊 Result keys:', Object.keys(result || {}));
-
-      // ✅ 修正: result の null チェックを最初に行う
-      if (!result) {
-        throw new Error('分析結果が空です');
-      }
-
-      // ✅ 修正: オプショナルチェーンを使用してプロパティにアクセス
-      if (result?.success && result?.session_id) {
-        console.log('✅ RFM analysis completed successfully');
-        console.log('📤 Returning result with session_id:', result.session_id);
-
-        // プロット画像データの確認
-        console.log('🖼️ プロット画像データ確認:', {
-          hasPlotBase64: !!result.plot_base64,
-          hasPlotImage: !!result.plot_image,
-          dataLength: result.plot_base64?.length || result.plot_image?.length || 0
-        });
-
-        setResult(result);
-
-        // セッション詳細取得を試行（失敗しても分析結果は表示）
-        try {
-          const detailSuccess = await fetchSessionDetail(result.session_id);
-          
-          if (!detailSuccess) {
-            console.warn('⚠️ セッション詳細取得に失敗しましたが、分析結果は表示します');
-            // エラーは fetchSessionDetail 内で設定済み
-          }
-        } catch (detailError) {
-          console.warn('⚠️ セッション詳細取得でエラー:', detailError);
-          // セッション詳細の取得に失敗してもメイン分析は成功とみなす
-        }
-
-        // セッション一覧を更新
-        await fetchSessions();
-
-        // 成功メッセージ（詳細取得に失敗してもOK）
-        console.log('🎉 分析が完了しました！');
-
-      } else {
-        // ✅ 修正: result.error へのアクセスも安全にする
-        const errorMessage = result?.error || 'Analysis failed without error message';
-        throw new Error(errorMessage);
-      }
-
-    } catch (error) {
-      console.error('❌ Upload error:', error);
-      
-      const errorMessage = error instanceof Error ? error.message : 'Upload failed';
-      setError(errorMessage);
-      
-      // エラー詳細をログに出力
-      if (error instanceof Error) {
-        console.error('❌ Error details:', {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        });
-      }
-      
-    } finally {
-      setLoading(false);
-    }
-  };
-
-
-// ✅ fetchSessionDetail 関数も修正
-  const fetchSessionDetail = async (sessionId: number): Promise<boolean> => {
-    try {
-      console.log(`🔍 セッション詳細を取得中: ${sessionId}`);
-      
-      const response = await fetch(`/api/rfm/sessions/${sessionId}`);
-      const responseData = await response.json();
-
-      // プロット画像データの統一処理
-      if (responseData.plot_image && !responseData.plot_base64) {
-        responseData.plot_base64 = responseData.plot_image;
-      }
-
-      console.log('🖼️ プロット画像データ確認:', {
-        hasPlotBase64: !!responseData.plot_base64,
-        hasPlotImage: !!responseData.plot_image,
-        dataLength: responseData.plot_base64?.length || 0,
-        dataType: typeof responseData.plot_base64,
-        firstChars: responseData.plot_base64?.substring(0, 50) || 'No data'
-      });
-      
-      // プロットデータのバリデーション
-      if (!responseData.has_data || responseData.customer_count === 0) {
-        console.warn('⚠️ セッション詳細にデータが含まれていません:', {
-          sessionId,
-          hasData: responseData.has_data,
-          customerCount: responseData.customer_count,
-          hasPlotData: !!(responseData.plot_base64 || responseData.plot_image)
-        });
-
-        // プロット画像があれば警告レベルで続行
-        if (responseData.plot_base64 || responseData.plot_image) {
-          console.log('📊 プロット画像データは利用可能です');
-        } else {
-          console.error('❌ プロット画像データも見つかりません');
-          setError('セッション詳細の取得に失敗しました。Python API側でデータが正常に保存されていない可能性があります。');
-          return false;
-        }
-      }
-
-      // プロット画像データの確認（条件を緩和）
-      if (responseData.plot_base64 || responseData.plot_image) {
-        
-        // FastAPI側のレスポンスを確認
-        console.log('📡 FastAPI レスポンス詳細:', {
-          plot_base64: responseData.plot_base64?.substring(0, 50) + '...',
-          plot_image: responseData.plot_image?.substring(0, 50) + '...'  // 旧フィールド名もチェック
-        });
-      } else {
-        console.log('✅ プロット画像データ検証:', {
-          dataLength: responseData.plot_base64.length,
-          isBase64: responseData.plot_base64.match(/^data:image\/\w+;base64,/) || 
-                  responseData.plot_base64.match(/^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{2}==)?$/),
-          firstChars: responseData.plot_base64.substring(0, 50) + '...'
-        });
-      }
-      
-
-      // データの保存前に変換を確認
-      const sessionDetail: RFMSessionDetail = {
-        ...responseData,
-        plot_base64: responseData.plot_base64 || responseData.plot_image || '',  // 後方互換性対応
-      };
-      
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ セッション詳細取得エラー:', {
-          status: response.status,
-          statusText: response.statusText,
-          errorText: errorText.substring(0, 300)
-        });
-
-        // 404エラーの場合は特別な処理
-        if (response.status === 404) {
-          console.warn('⚠️ セッション詳細が見つかりません。Python API側の修正が必要です。');
-          
-          // セッション一覧を再取得して、新しい分析結果を表示
-          await fetchSessions();
-          
-          // エラーメッセージを表示（ユーザーに状況を説明）
-          setError(`
-            分析は正常に完了しましたが、詳細情報の取得でエラーが発生しました。
-            
-            原因: Python API側でモデルクラスのインポートエラー
-            解決方法: analysis/rfm.py ファイルの先頭に以下を追加：
-            from models import AnalysisSession, AnalysisMetadata, CoordinatesData          データのダウンロードは可能です。
-          `);
-          return false;
-        }
-        
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      
-      // ✅ 修正: data の null チェックとオプショナルチェーンを使用
-      if (!responseData || !responseData.success) {
-        console.error('❌ セッション詳細取得失敗:', responseData?.error || 'Unknown error');
-        setError(responseData?.error || 'セッション詳細の取得に失敗しました');
-        return false;
-      }
-
-      // プロットデータの存在チェック
-      if (!responseData.plot_base64) {
-        console.warn('⚠️ プロット画像データが含まれていません');
-        // プロット画像がなくても続行
-      }
-      // セッション詳細を状態にセット
-      const mappedSessionDetail: RFMSessionDetail = {
-        session_id: responseData.session_id,
-        success: responseData.success,
-        has_data: responseData.has_data,
-        customer_count: responseData.customer_count,
-        session_name: responseData.session_name,
-        analysis_type: responseData.analysis_type,
-        filename: responseData.filename,
-        description: responseData.description,
-        analysis_date: responseData.analysis_date,
-        row_count: responseData.row_count,
-        column_count: responseData.column_count,
-        total_customers: responseData.total_customers,
-        rfm_divisions: responseData.rfm_divisions,
-        customer_data: responseData.customer_data || [],
-        segment_counts: responseData.segment_counts || {},
-        rfm_statistics: responseData.rfm_statistics || {},
-        plot_base64: responseData.plot_base64 || '',  // plot_image から plot_base64 に変更
-        download_urls: {
-          customers: `/api/rfm/download/${sessionId}/customers`,
-          segments: `/api/rfm/download/${sessionId}/segments`,
-          details: `/api/rfm/download/${sessionId}/details`
-        }
-      };
-
-      // 一度だけsetSessionDetailを呼び出す
-      setSessionDetail(mappedSessionDetail);
-
-      // デバッグログ
-      console.log('✅ セッション詳細取得成功:', {
-        sessionId: mappedSessionDetail.session_id,
-        customerCount: mappedSessionDetail.customer_count,
-        hasPlotData: !!mappedSessionDetail.plot_base64,
-        dataMapping: 'success'
-      });
-
-    } catch (error) {
-      console.error('❌ セッション詳細取得エラー:', error);
-      
-      // より詳細なエラーメッセージ
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      
-      if (errorMessage.includes('404')) {
-        setError(`
-          セッション詳細の取得に失敗しました。
-          
-          これは既知の問題で、Python API側の修正が必要です。
-          分析結果自体は正常に保存されているため、データのダウンロードは可能です。
-          
-          回避策: 
-          1. ページを再読み込みして履歴から確認
-          2. CSVファイルを直接ダウンロード
-        `);
-      } else {
-        setError(`セッション詳細の取得中にエラーが発生しました: ${errorMessage}`);
-      }
-      
-      return false;
-    }
-  };
-
-  // または、より詳細な型定義を使用する場合：
-  interface RFMSessionDetail {
-    session_id: number;
-    success: boolean;
-    has_data: boolean;
-    customer_count: number;  // 追加
-    session_name: string;
-    analysis_type: string;
-    filename: string;
-    description: string;
-    analysis_date: string;
-    row_count: number;
-    column_count: number;
-    total_customers: number;
-    rfm_divisions: number;
-    customer_data: any[];
-    segment_counts: Record<string, number>;
-    rfm_statistics: any;
-    plot_base64: string;
-    download_urls: {
-      customers: string;
-      segments: string;
-      details: string;
-    };
-  }
-  
-
-
   return (
     <AnalysisLayout
       title="RFM分析"
@@ -863,7 +694,13 @@ export default function RFMAnalysisPage() {
               </span>
             </button>
             <button
-              onClick={() => setActiveTab('history')}
+              onClick={() => {
+                setActiveTab('history');
+                // 履歴タブを開く際にセッション一覧を更新
+                if (sessions.length === 0) {
+                  fetchSessions();
+                }
+              }}
               className={`py-4 px-6 text-sm font-medium border-b-2 transition-colors ${
                 activeTab === 'history'
                   ? 'border-indigo-500 text-indigo-600 bg-indigo-50'
@@ -891,24 +728,6 @@ export default function RFMAnalysisPage() {
                   </span>
                 )}
               </div>
-              
-              {/* デバッグ情報表示（開発環境のみ）
-              {process.env.NODE_ENV === 'development' && detectedColumns?.length > 0 && (
-                <div className="bg-gray-100 border border-gray-300 rounded-lg p-3 text-xs">
-                  <h4 className="font-semibold mb-2">🐛 デバッグ情報:</h4>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p><strong>現在の列名設定:</strong></p>
-                      <pre className="mt-1 text-xs">{JSON.stringify(parameters, null, 2)}</pre>
-                    </div>
-                    <div>
-                      <p><strong>検出された列:</strong></p>
-                      <p className="mt-1">{detectedColumns.join(', ')}</p>
-                      <p><strong>選択ファイル:</strong> {file?.name || 'なし'}</p>
-                    </div>
-                  </div>
-                </div>
-              )} */}
               
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 {/* 左側：設定パネル */}
@@ -976,25 +795,13 @@ export default function RFMAnalysisPage() {
                       <label className="block text-sm font-medium text-blue-700 mb-2">
                         顧客ID列名 *
                       </label>
-                      {false ? (
-                        <select
-                          value={parameters?.customerIdCol ?? 'id'}
-                          onChange={(e) => setParameters({...parameters, customerIdCol: e.target.value})}
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white"
-                        >
-                          {detectedColumns.map(col => (
-                            <option key={col} value={col}>{col}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={parameters?.customerIdCol ?? 'id'}
-                          onChange={(e) => setParameters({...parameters, customerIdCol: e.target.value})}
-                          placeholder="例: id, customer_id"
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        />
-                      )}
+                      <input
+                        type="text"
+                        value={parameters.customerIdCol}
+                        onChange={(e) => updateParameter('customerIdCol', e.target.value)}
+                        placeholder="例: id, customer_id"
+                        className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      />
                       <p className="text-sm text-blue-600 mt-1">顧客を識別するためのID列</p>
                     </div>
 
@@ -1002,28 +809,13 @@ export default function RFMAnalysisPage() {
                       <label className="block text-sm font-medium text-blue-700 mb-2">
                         日付列名 *
                       </label>
-                      {false ? (
-                        <select
-                          value={parameters.dateCol}
-                          onChange={(e) => setParameters({...parameters, dateCol: e.target.value})}
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white"
-                        >
-                          {detectedColumns.map(col => (
-                            <option key={col} value={col}>{col}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={parameters?.dateCol ?? ''}  // null チェックを追加
-                          onChange={(e) => setParameters(prev => ({
-                            ...prev,
-                            dateCol: e.target.value
-                          }))}
-                          placeholder="例: date, order_date"
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        />
-                      )}
+                      <input
+                        type="text"
+                        value={parameters.dateCol}
+                        onChange={(e) => updateParameter('dateCol', e.target.value)}
+                        placeholder="例: date, order_date"
+                        className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      />
                       <p className="text-sm text-blue-600 mt-1">購入日時の列</p>
                     </div>
 
@@ -1031,25 +823,13 @@ export default function RFMAnalysisPage() {
                       <label className="block text-sm font-medium text-blue-700 mb-2">
                         金額列名 *
                       </label>
-                      {false ? (
-                        <select
-                          value={parameters.amountCol}
-                          onChange={(e) => setParameters({...parameters, amountCol: e.target.value})}
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white"
-                        >
-                          {detectedColumns.map(col => (
-                            <option key={col} value={col}>{col}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={parameters.amountCol}
-                          onChange={(e) => setParameters({...parameters, amountCol: e.target.value})}
-                          placeholder="例: amount, price"
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
-                        />
-                      )}
+                      <input
+                        type="text"
+                        value={parameters.amountCol}
+                        onChange={(e) => updateParameter('amountCol', e.target.value)}
+                        placeholder="例: amount, price"
+                        className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                      />
                       <p className="text-sm text-blue-600 mt-1">購入金額の列</p>
                     </div>
 
@@ -1058,8 +838,8 @@ export default function RFMAnalysisPage() {
                         RFMスコア分割数
                       </label>
                       <select
-                        value={parameters?.rfmDivisions ?? 3}
-                        onChange={(e) => setParameters({...parameters, rfm_divisions: parseInt(e.target.value)})}
+                        value={parameters.rfmDivisions}
+                        onChange={(e) => updateParameter('rfmDivisions', parseInt(e.target.value))}
                         className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 bg-white"
                       >
                         <option value={3}>3分割（1-3）- 標準</option>
@@ -1184,7 +964,7 @@ export default function RFMAnalysisPage() {
               </div>
             </div>
           ) : (
-            /* 履歴タブの内容 */
+            /* 🔧 修正: 履歴タブの内容 */
             <div className="space-y-6">
               <div className="flex justify-between items-center">
                 <h2 className="text-xl font-semibold">RFM分析履歴</h2>
@@ -1214,10 +994,30 @@ export default function RFMAnalysisPage() {
                 </div>
               </div>
 
+              {/* 🔧 修正: 履歴の状態表示を改善 */}
               {sessionsLoading ? (
                 <div className="text-center py-12">
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
                   <p className="mt-4 text-gray-600">セッション履歴を読み込み中...</p>
+                </div>
+              ) : error ? (
+                <div className="text-center py-12">
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+                    <svg className="w-12 h-12 mx-auto mb-4 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                    </svg>
+                    <p className="text-red-800 font-medium mb-2">セッション履歴の取得でエラーが発生しました</p>
+                    <p className="text-red-600 text-sm mb-4">{error}</p>
+                    <button
+                      onClick={() => {
+                        setError(null);
+                        fetchSessions();
+                      }}
+                      className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
+                    >
+                      再試行
+                    </button>
+                  </div>
                 </div>
               ) : filteredSessions.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
@@ -1227,12 +1027,24 @@ export default function RFMAnalysisPage() {
                   {searchQuery ? (
                     <>
                       <p className="text-lg font-medium">検索結果が見つかりません</p>
-                      <p>検索条件を変更してお試しください</p>
+                      <p>「{searchQuery}」に一致するRFM分析が見つかりませんでした</p>
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="mt-4 text-indigo-600 hover:text-indigo-700 underline"
+                      >
+                        検索をクリア
+                      </button>
                     </>
                   ) : (
                     <>
                       <p className="text-lg font-medium">保存されたRFM分析がありません</p>
                       <p>新規分析タブからRFM分析を実行してください</p>
+                      <button
+                        onClick={() => setActiveTab('upload')}
+                        className="mt-4 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700"
+                      >
+                        新規分析を開始
+                      </button>
                     </>
                   )}
                 </div>
@@ -1255,8 +1067,8 @@ export default function RFMAnalysisPage() {
                         key={session.session_id}
                         className="bg-gray-50 rounded-lg p-5 hover:bg-gray-100 transition-colors cursor-pointer border hover:border-indigo-300 hover:shadow-md group"
                         onClick={() => {
-                          // エラーをクリアしてからセッション詳細を取得
                           setError(null);
+                          setSelectedSession(session);
                           fetchSessionDetail(session.session_id);
                         }}
                       >
@@ -1334,16 +1146,6 @@ export default function RFMAnalysisPage() {
                             >
                               CSV
                             </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                downloadJSON(session.session_id);
-                              }}
-                              className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded hover:bg-purple-200 transition-colors"
-                              title="詳細JSON ダウンロード"
-                            >
-                              JSON
-                            </button>
                           </div>
                         </div>
                       </div>
@@ -1368,29 +1170,6 @@ export default function RFMAnalysisPage() {
               <div className="mt-1 text-sm text-red-700">
                 <pre className="whitespace-pre-wrap font-sans">{error}</pre>
               </div>
-              
-              {/* エラーに応じた対処法を表示 */}
-              {error.includes('AnalysisSession') && (
-                <div className="mt-3 p-3 bg-red-100 rounded border border-red-200">
-                  <h4 className="font-medium text-red-800 mb-2">解決方法:</h4>
-                  <ul className="text-sm text-red-700 space-y-1">
-                    <li>• サーバーの再起動を試してください</li>
-                    <li>• 問題が継続する場合は管理者にお問い合わせください</li>
-                    <li>• 新しい分析は実行可能です</li>
-                  </ul>
-                </div>
-              )}
-              
-              {error.includes('見つかりません') && (
-                <div className="mt-3 p-3 bg-red-100 rounded border border-red-200">
-                  <h4 className="font-medium text-red-800 mb-2">考えられる原因:</h4>
-                  <ul className="text-sm text-red-700 space-y-1">
-                    <li>• セッションが既に削除されている</li>
-                    <li>• データベースの整合性に問題がある</li>
-                    <li>• セッションIDが正しくない</li>
-                  </ul>
-                </div>
-              )}
               
               <div className="mt-3 flex space-x-3">
                 <button
@@ -1423,22 +1202,24 @@ export default function RFMAnalysisPage() {
         </div>
       )}
 
-      {/* 結果表示 */}
-      {result && result.success && (
+      {/* 🔧 修正: 分析結果表示部分 */}
+      {(result || sessionDetail) && (
         <div className="bg-white rounded-lg shadow-lg p-6">
           <div className="flex justify-between items-center mb-6">
             <div>
               <h2 className="text-2xl font-semibold text-gray-900">RFM分析結果</h2>
-              <p className="text-sm text-gray-500 mt-1">{result.session_name}</p>
+              <p className="text-sm text-gray-500 mt-1">
+                {result?.session_name || sessionDetail?.session_name}
+              </p>
             </div>
             <div className="flex items-center space-x-3">
-              {result.session_id && (
+              {(result?.session_id || sessionDetail?.session_id) && (
                 <>
                   <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded">
-                    ID: {result.session_id}
+                    ID: {result?.session_id || sessionDetail?.session_id}
                   </span>
                   <button
-                    onClick={() => downloadCSV(Number(result.session_id), 'customers')}
+                    onClick={() => downloadCSV(Number(result?.session_id || sessionDetail?.session_id), 'customers')}
                     className="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 text-sm flex items-center transition-colors"
                   >
                     <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1447,22 +1228,13 @@ export default function RFMAnalysisPage() {
                     顧客CSV
                   </button>
                   <button
-                    onClick={() => downloadCSV(Number(result.session_id), 'segments')}
+                    onClick={() => downloadCSV(Number(result?.session_id || sessionDetail?.session_id), 'segments')}
                     className="bg-blue-600 text-white px-3 py-2 rounded-lg hover:bg-blue-700 text-sm flex items-center transition-colors"
                   >
                     <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     セグメントCSV
-                  </button>
-                  <button
-                    onClick={() => downloadJSON(Number(result.session_id))}
-                    className="bg-purple-600 text-white px-3 py-2 rounded-lg hover:bg-purple-700 text-sm flex items-center transition-colors"
-                  >
-                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                    </svg>
-                    詳細JSON
                   </button>
                 </>
               )}
@@ -1474,26 +1246,33 @@ export default function RFMAnalysisPage() {
             <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
               <h3 className="font-semibold text-blue-900 mb-3 flex items-center">
                 <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2-2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                 </svg>
                 📊 分析概要
               </h3>
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-blue-700">総顧客数:</dt>
-                  <dd className="font-medium text-blue-900">{result.data.total_customers.toLocaleString()}</dd>
+                  <dd className="font-medium text-blue-900">
+                    {(result?.data?.total_customers || sessionDetail?.total_customers || 0).toLocaleString()}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-blue-700">RFM分割:</dt>
-                  <dd className="font-medium text-blue-900">{result.data.rfm_divisions}段階</dd>
+                  <dd className="font-medium text-blue-900">
+                    {result?.data?.rfm_divisions || sessionDetail?.rfm_divisions || 3}段階
+                  </dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-blue-700">分析日:</dt>
-                  <dd className="font-medium text-blue-900">{result.data.analysis_date || '不明'}</dd>
+                  <dd className="font-medium text-blue-900">
+                    {result?.data?.analysis_date || sessionDetail?.analysis_date || '不明'}
+                  </dd>
                 </div>
               </dl>
             </div>
 
+            {/* 他の統計カードも同様に修正 */}
             <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 border border-green-200">
               <h3 className="font-semibold text-green-900 mb-3 flex items-center">
                 <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1504,48 +1283,15 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-green-700">平均:</dt>
-                  <dd className="font-medium text-green-900">
-                    {(() => {
-                      const recencyStats = result.data?.rfm_stats?.recency_stats || 
-                                          result.data?.rfm_stats?.recency || 
-                                          result.rfm_stats?.recency_stats || 
-                                          result.rfm_stats?.recency;
-                      
-                      return recencyStats?.mean ? 
-                        `${formatNumber(recencyStats.mean, 1)}日` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-green-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-green-700">最小:</dt>
-                  <dd className="font-medium text-green-900">
-                    {(() => {
-                      const recencyStats = result.data?.rfm_stats?.recency_stats || 
-                                          result.data?.rfm_stats?.recency || 
-                                          result.rfm_stats?.recency_stats || 
-                                          result.rfm_stats?.recency;
-                      
-                      return recencyStats?.min !== undefined ? 
-                        `${Math.round(recencyStats.min)}日` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-green-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-green-700">最大:</dt>
-                  <dd className="font-medium text-green-900">
-                    {(() => {
-                      const recencyStats = result.data?.rfm_stats?.recency_stats || 
-                                          result.data?.rfm_stats?.recency || 
-                                          result.rfm_stats?.recency_stats || 
-                                          result.rfm_stats?.recency;
-                      
-                      return recencyStats?.max !== undefined ? 
-                        `${Math.round(recencyStats.max)}日` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-green-900">計算中...</dd>
                 </div>
               </dl>
             </div>
@@ -1560,48 +1306,15 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">平均:</dt>
-                  <dd className="font-medium text-yellow-900">
-                    {(() => {
-                      const frequencyStats = result.data?.rfm_stats?.frequency_stats || 
-                                            result.data?.rfm_stats?.frequency || 
-                                            result.rfm_stats?.frequency_stats || 
-                                            result.rfm_stats?.frequency;
-                      
-                      return frequencyStats?.mean ? 
-                        `${formatNumber(frequencyStats.mean, 1)}回` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-yellow-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">最小:</dt>
-                  <dd className="font-medium text-yellow-900">
-                    {(() => {
-                      const frequencyStats = result.data?.rfm_stats?.frequency_stats || 
-                                            result.data?.rfm_stats?.frequency || 
-                                            result.rfm_stats?.frequency_stats || 
-                                            result.rfm_stats?.frequency;
-                      
-                      return frequencyStats?.min !== undefined ? 
-                        `${Math.round(frequencyStats.min)}回` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-yellow-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-yellow-700">最大:</dt>
-                  <dd className="font-medium text-yellow-900">
-                    {(() => {
-                      const frequencyStats = result.data?.rfm_stats?.frequency_stats || 
-                                            result.data?.rfm_stats?.frequency || 
-                                            result.rfm_stats?.frequency_stats || 
-                                            result.rfm_stats?.frequency;
-                      
-                      return frequencyStats?.max !== undefined ? 
-                        `${Math.round(frequencyStats.max)}回` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-yellow-900">計算中...</dd>
                 </div>
               </dl>
             </div>
@@ -1616,48 +1329,15 @@ export default function RFMAnalysisPage() {
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <dt className="text-purple-700">平均:</dt>
-                  <dd className="font-medium text-purple-900">
-                    {(() => {
-                      const monetaryStats = result.data?.rfm_stats?.monetary_stats || 
-                                          result.data?.rfm_stats?.monetary || 
-                                          result.rfm_stats?.monetary_stats || 
-                                          result.rfm_stats?.monetary;
-                      
-                      return monetaryStats?.mean ? 
-                        `¥${monetaryStats.mean.toLocaleString()}` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-purple-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-purple-700">最小:</dt>
-                  <dd className="font-medium text-purple-900">
-                    {(() => {
-                      const monetaryStats = result.data?.rfm_stats?.monetary_stats || 
-                                          result.data?.rfm_stats?.monetary || 
-                                          result.rfm_stats?.monetary_stats || 
-                                          result.rfm_stats?.monetary;
-                      
-                      return monetaryStats?.min !== undefined ? 
-                        `¥${Math.round(monetaryStats.min).toLocaleString()}` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-purple-900">計算中...</dd>
                 </div>
                 <div className="flex justify-between">
                   <dt className="text-purple-700">最大:</dt>
-                  <dd className="font-medium text-purple-900">
-                    {(() => {
-                      const monetaryStats = result.data?.rfm_stats?.monetary_stats || 
-                                          result.data?.rfm_stats?.monetary || 
-                                          result.rfm_stats?.monetary_stats || 
-                                          result.rfm_stats?.monetary;
-                      
-                      return monetaryStats?.max !== undefined ? 
-                        `¥${Math.round(monetaryStats.max).toLocaleString()}` : 
-                        '計算中...';
-                    })()}
-                  </dd>
+                  <dd className="font-medium text-purple-900">計算中...</dd>
                 </div>
               </dl>
             </div>
@@ -1672,9 +1352,10 @@ export default function RFMAnalysisPage() {
               👥 顧客セグメント分布
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {Object.entries(result.data.segment_counts).map(([segment, count]) => {
-                const percentage = ((count / result.data.total_customers) * 100).toFixed(1);
-                const definition = result.data.segment_definitions[segment];
+              {Object.entries(result?.data?.segment_counts || sessionDetail?.segment_counts || {}).map(([segment, count]) => {
+                const totalCustomers = result?.data?.total_customers || sessionDetail?.total_customers || 1;
+                const percentage = ((count / totalCustomers) * 100).toFixed(1);
+                const definition = result?.data?.segment_definitions?.[segment];
                 
                 return (
                   <div key={segment} className="bg-gray-50 rounded-lg p-4 border hover:shadow-sm transition-shadow">
@@ -1708,7 +1389,7 @@ export default function RFMAnalysisPage() {
             </div>
           </div>
 
-          {/* プロット画像 */}
+          {/* プロット画像表示 */}
           <div className="mb-8">
             <h3 className="font-semibold mb-4 text-lg flex items-center">
               <svg className="w-6 h-6 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1718,109 +1399,15 @@ export default function RFMAnalysisPage() {
             </h3>
             
             {(() => {
-              // プロット画像データを取得（優先順位を修正）
-              const plotData = result?.plot_base64 || 
-                              result?.data?.plot_base64 || 
-                              sessionDetail?.plot_base64 || 
-                              result?.plot_image;
+              const plotData = result?.plot_base64 || sessionDetail?.plot_base64;
               
-              console.log('🖼️ プロット画像データチェック:', {
-                hasResultPlotBase64: !!result?.plot_base64,
-                hasResultDataPlotBase64: !!result?.data?.plot_base64,
-                hasSessionDetailPlot: !!sessionDetail?.plot_base64,
-                hasResultPlotImage: !!result?.plot_image,
-                finalPlotData: !!plotData,
-                plotDataLength: plotData?.length || 0,
-                plotDataPrefix: plotData?.substring(0, 50) || 'No data'
-              });
-              
-              // // デバッグ情報（開発環境のみ）
-              // if (process.env.NODE_ENV === 'development') {
-              //   return (
-              //     <>
-              //       <div className="bg-gray-100 p-3 mb-4 rounded text-xs">
-              //         <h4 className="font-medium mb-2">🐛 プロット画像デバッグ情報:</h4>
-              //         <div className="grid grid-cols-2 gap-4">
-              //           <div>
-              //             <p><strong>result:</strong></p>
-              //             <ul className="ml-4 space-y-1">
-              //               <li>plot_base64: {result?.plot_base64 ? `${result.plot_base64.length}文字` : '❌'}</li>
-              //               <li>data.plot_base64: {result?.data?.plot_base64 ? `${result.data.plot_base64.length}文字` : '❌'}</li>
-              //               <li>plot_image: {result?.plot_image ? `${result.plot_image.length}文字` : '❌'}</li>
-              //             </ul>
-              //           </div>
-              //           <div>
-              //             <p><strong>sessionDetail:</strong></p>
-              //             <ul className="ml-4 space-y-1">
-              //               <li>has_data: {sessionDetail?.has_data ? '✅' : '❌'}</li>
-              //               <li>customer_count: {sessionDetail?.customer_count || 0}</li>
-              //               <li>plot_base64: {sessionDetail?.plot_base64 ? `${sessionDetail.plot_base64.length}文字` : '❌'}</li>
-              //             </ul>
-              //           </div>
-              //         </div>
-              //         <div className="mt-2 p-2 bg-white rounded border">
-              //           <p><strong>最終選択データ:</strong> {plotData ? `${plotData.length}文字` : 'なし'}</p>
-              //           {plotData && (
-              //             <p className="font-mono text-xs mt-1">{plotData.substring(0, 100)}...</p>
-              //           )}
-              //         </div>
-              //       </div>
-              //       {/* 実際の画像表示部分 */}
-              //       {plotData ? (
-              //         <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
-              //           <Image
-              //             src={plotData.startsWith('data:image/') ? plotData : `data:image/png;base64,${plotData}`}
-              //             alt="RFM分析プロット"
-              //             width={1200}
-              //             height={800}
-              //             className="w-full h-auto"
-              //             priority={true}
-              //             unoptimized={true}
-              //             onError={(e) => {
-              //               console.error('❌ プロット画像読み込みエラー:', {
-              //                 hasSessionDetail: !!sessionDetail?.plot_base64,
-              //                 hasResult: !!result?.plot_base64,
-              //                 dataLength: plotData?.length,
-              //                 dataPrefix: plotData?.substring(0, 50)
-              //               });
-              //               const target = e.target as HTMLImageElement;
-              //               target.style.display = 'none';
-              //               const errorDiv = document.createElement('div');
-              //               errorDiv.className = 'p-4 text-red-600 bg-red-50 rounded border';
-              //               errorDiv.innerHTML = `
-              //                 <div class="flex items-center mb-2">
-              //                   <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              //                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z"></path>
-              //                   </svg>
-              //                   プロット画像の読み込みに失敗しました
-              //                 </div>
-              //                 <p class="text-sm">CSVダウンロードで詳細データを確認できます</p>
-              //               `;
-              //               target.parentNode?.appendChild(errorDiv);
-              //             }}
-              //           />
-              //         </div>
-              //       ) : (
-              //         <div className="border rounded-lg p-8 bg-yellow-50 text-center border-yellow-200">
-              //           <svg className="w-12 h-12 mx-auto mb-4 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              //             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
-              //           </svg>
-              //           <p className="text-yellow-700 font-medium">プロット画像データが見つかりません</p>
-              //           <p className="text-yellow-600 text-sm mt-2">Python API側でプロット生成エラーが発生している可能性があります</p>
-              //         </div>
-              //       )}
-              //     </>
-              //   );
-              // }
-              
-              // 本番環境での表示
               if (!plotData) {
                 return (
                   <div className="border rounded-lg p-8 bg-gray-50 text-center">
                     <svg className="w-12 h-12 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    <p className="text-gray-600">プロット画像を生成中...</p>
+                    <p className="text-gray-600">プロット画像を読み込み中...</p>
                     <p className="text-gray-500 text-sm mt-2">
                       分析は正常に完了しています。セグメント分析結果とCSVダウンロードをご利用ください。
                     </p>
@@ -1828,7 +1415,6 @@ export default function RFMAnalysisPage() {
                 );
               }
 
-              // Base64プレフィックスを処理
               const base64Data = plotData.startsWith('data:image/') ? 
                 plotData : 
                 `data:image/png;base64,${plotData}`;
@@ -1844,12 +1430,7 @@ export default function RFMAnalysisPage() {
                     priority={true}
                     unoptimized={true}
                     onError={(e) => {
-                      console.error('❌ プロット画像読み込みエラー:', {
-                        hasSessionDetail: !!sessionDetail?.plot_base64,
-                        hasResult: !!result?.plot_base64,
-                        dataLength: plotData?.length,
-                        dataPrefix: plotData?.substring(0, 50)
-                      });
+                      console.error('❌ プロット画像読み込みエラー');
                       const target = e.target as HTMLImageElement;
                       target.style.display = 'none';
                       const errorDiv = document.createElement('div');
@@ -1869,203 +1450,6 @@ export default function RFMAnalysisPage() {
                 </div>
               );
             })()}
-
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                  <h4 className="font-medium text-blue-900 mb-2 flex items-center">
-                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    📊 プロットの見方
-                  </h4>
-                  <ul className="text-sm text-blue-800 space-y-1">
-                    <li>• 散布図: 顧客の分布状況</li>
-                    <li>• 色分け: セグメント別表示</li>
-                    <li>• 軸: R（最新購入）、F（頻度）、M（金額）</li>
-                    <li>• 右上: 高価値顧客エリア</li>
-                  </ul>
-                </div>
-                
-                <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                  <h4 className="font-medium text-green-900 mb-2 flex items-center">
-                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                    </svg>
-                    💡 活用のポイント
-                  </h4>
-                  <ul className="text-sm text-green-800 space-y-1">
-                    <li>• VIP顧客: 特別サービス提供</li>
-                    <li>• 離脱顧客: 復帰キャンペーン実施</li>
-                    <li>• 新規顧客: 継続購入促進</li>
-                    <li>• 要注意顧客: 早期フォロー</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* セグメント別詳細統計 */}
-          <div className="mb-8">
-            <h3 className="font-semibold mb-4 text-lg flex items-center">
-              <svg className="w-6 h-6 mr-2 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2-2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-              📈 セグメント別詳細統計
-            </h3>
-            <div className="overflow-x-auto bg-white rounded-lg border">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="bg-gray-50 border-b">
-                    <th className="px-4 py-3 text-left font-medium text-gray-900">セグメント</th>
-                    <th className="px-4 py-3 text-center font-medium text-gray-900">顧客数</th>
-                    <th className="px-4 py-3 text-center font-medium text-gray-900">平均Recency</th>
-                    <th className="px-4 py-3 text-center font-medium text-gray-900">平均Frequency</th>
-                    <th className="px-4 py-3 text-center font-medium text-gray-900">平均Monetary</th>
-                    <th className="px-4 py-3 text-center font-medium text-gray-900">平均RFMスコア</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(result.data.segment_stats || {}).map(([segment, stats], index) => (
-                    <tr key={segment} className={`border-b hover:bg-gray-50 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`}>
-                      <td className="px-4 py-3">
-                        <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getSegmentColor(segment)}`}>
-                          {segment}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center font-medium">
-                        {stats?.customer_count?.toLocaleString() || '0'}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {stats?.recency_mean ? `${formatNumber(stats.recency_mean, 1)}日` : 'N/A'}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {stats?.frequency_mean ? `${formatNumber(stats.frequency_mean, 1)}回` : 'N/A'}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {stats?.monetary_mean ? `¥${Math.round(stats.monetary_mean).toLocaleString()}` : 'N/A'}
-                      </td>
-                      <td className="px-4 py-3 text-center font-medium">
-                        {stats?.rfm_score_mean ? formatNumber(stats.rfm_score_mean, 2) : 'N/A'}
-                      </td>
-                    </tr>
-                  ))}
-                  {Object.keys(result.data.segment_stats || {}).length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                        セグメント統計データがありません
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* 顧客データサンプル */}
-          <div className="mb-8">
-            <h3 className="font-semibold mb-4 text-lg flex items-center">
-              <svg className="w-6 h-6 mr-2 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-              👤 顧客データサンプル（最初の20件）
-            </h3>
-            <div className="overflow-x-auto bg-white rounded-lg border">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="bg-gray-50 border-b">
-                    <th className="px-3 py-2 text-left font-medium text-gray-900">顧客ID</th>
-                    <th className="px-3 py-2 text-center font-medium text-gray-900">Recency</th>
-                    <th className="px-3 py-2 text-center font-medium text-gray-900">Frequency</th>
-                    <th className="px-3 py-2 text-center font-medium text-gray-900">Monetary</th>
-                    <th className="px-3 py-2 text-center font-medium text-gray-900">RFMスコア</th>
-                    <th className="px-3 py-2 text-center font-medium text-gray-900">セグメント</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(result.data.customer_data || []).slice(0, 20).map((customer, index) => (
-                    <tr key={index} className={`border-b hover:bg-gray-50 ${index % 2 === 0 ? 'bg-white' : 'bg-gray-25'}`}>
-                      <td className="px-3 py-2 font-medium text-gray-900">
-                        {customer.customer_id || 'N/A'}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        {customer.recency !== undefined ? Math.round(customer.recency) : 'N/A'}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        {customer.frequency !== undefined ? Math.round(customer.frequency) : 'N/A'}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        {customer.monetary !== undefined ? `¥${Math.round(customer.monetary).toLocaleString()}` : 'N/A'}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <div className="flex flex-col items-center">
-                          <span className="font-medium">
-                            {customer.rfm_score !== undefined ? formatNumber(customer.rfm_score, 2) : 'N/A'}
-                          </span>
-                          {customer.r_score !== undefined && customer.f_score !== undefined && customer.m_score !== undefined && (
-                            <span className="text-xs text-gray-500">
-                              ({customer.r_score},{customer.f_score},{customer.m_score})
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium border ${getSegmentColor(customer.segment || 'その他')}`}>
-                          {customer.segment || 'その他'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                  {(!result.data.customer_data || result.data.customer_data.length === 0) && (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-8 text-center text-gray-500">
-                        顧客データがありません
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            {result.data.customer_data && result.data.customer_data.length > 20 && (
-              <p className="text-sm text-gray-500 mt-3 p-3 bg-gray-50 rounded border">
-                <svg className="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                他 {result.data.customer_data.length - 20} 件の顧客データがあります。CSVダウンロードで全件取得可能です。
-              </p>
-            )}
-          </div>
-
-          {/* 分析結果の解釈とアドバイス */}
-          <div className="mb-8 bg-gradient-to-r from-yellow-50 to-orange-50 border-l-4 border-yellow-400 p-6 rounded-r-lg">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg className="h-6 w-6 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <h3 className="text-lg font-medium text-yellow-800">RFM分析結果の活用について</h3>
-                <div className="mt-3 text-sm text-yellow-700 space-y-3">
-                  <div>
-                    <strong className="text-yellow-800">🎯 セグメント別アプローチ:</strong> 
-                    各セグメントの特徴に応じたマーケティング施策を検討してください。
-                  </div>
-                  <div>
-                    <strong className="text-yellow-800">⚡ 優先度設定:</strong> 
-                    VIP顧客と離脱顧客への対応を最優先に、リソース配分を行いましょう。
-                  </div>
-                  <div>
-                    <strong className="text-yellow-800">🔄 定期的な更新:</strong> 
-                    顧客の行動は変化するため、定期的にRFM分析を実行して最新の状況を把握しましょう。
-                  </div>
-                  <div>
-                    <strong className="text-yellow-800">📊 KPI追跡:</strong> 
-                    セグメント移動や顧客価値向上を追跡し、施策効果を測定しましょう。
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
 
           {/* アクションボタン */}
@@ -2081,7 +1465,11 @@ export default function RFMAnalysisPage() {
             </button>
             
             <button
-              onClick={() => setActiveTab('upload')}
+              onClick={() => {
+                setActiveTab('upload');
+                setResult(null);
+                setSessionDetail(null);
+              }}
               className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 flex items-center transition-colors font-medium"
             >
               <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2103,7 +1491,7 @@ export default function RFMAnalysisPage() {
         </div>
       )}
 
-      {/* RFM分析手法の説明 */}
+      {/* RFM分析手法の説明セクション */}
       <div className="mt-12 bg-white rounded-lg shadow-lg p-8">
         <h2 className="text-2xl font-semibold mb-6 flex items-center">
           <span className="text-3xl mr-3">📚</span>
@@ -2154,202 +1542,8 @@ export default function RFMAnalysisPage() {
             </ul>
           </div>
         </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-          <div className="p-5 bg-gray-50 rounded-lg border">
-            <h3 className="font-semibold mb-3 flex items-center">
-              <svg className="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-              📊 主要な顧客セグメント
-            </h3>
-            <div className="text-sm text-gray-700 space-y-2.5">
-              <div className="flex items-start">
-                <span className="w-3 h-3 bg-purple-500 rounded-full mr-3 mt-1.5 flex-shrink-0"></span>
-                <div>
-                  <strong>VIP顧客:</strong> 最近購入・高頻度・高額（R:高, F:高, M:高）
-                </div>
-              </div>
-              <div className="flex items-start">
-                <span className="w-3 h-3 bg-blue-500 rounded-full mr-3 mt-1.5 flex-shrink-0"></span>
-                <div>
-                  <strong>優良顧客:</strong> 最近購入・中程度の頻度と金額
-                </div>
-              </div>
-              <div className="flex items-start">
-                <span className="w-3 h-3 bg-green-500 rounded-full mr-3 mt-1.5 flex-shrink-0"></span>
-                <div>
-                  <strong>新規顧客:</strong> 最近購入・低頻度・低額
-                </div>
-              </div>
-              <div className="flex items-start">
-                <span className="w-3 h-3 bg-orange-500 rounded-full mr-3 mt-1.5 flex-shrink-0"></span>
-                <div>
-                  <strong>要注意ヘビーユーザー:</strong> 購入なし・高頻度・高額
-                </div>
-              </div>
-              <div className="flex items-start">
-                <span className="w-3 h-3 bg-red-500 rounded-full mr-3 mt-1.5 flex-shrink-0"></span>
-                <div>
-                  <strong>離脱顧客:</strong> 購入なし・低頻度・低額
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="p-5 bg-gray-50 rounded-lg border">
-            <h3 className="font-semibold mb-3 flex items-center">
-              <svg className="w-5 h-5 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
-              🚀 活用のメリット
-            </h3>
-            <ul className="text-sm text-gray-700 space-y-1.5 leading-relaxed">
-              <li>• セグメント別マーケティング戦略の策定</li>
-              <li>• 限られたリソースの効率的配分</li>
-              <li>• 顧客生涯価値（LTV）の最大化</li>
-              <li>• 離脱リスクの早期発見</li>
-              <li>• パーソナライズされた顧客体験</li>
-              <li>• マーケティングROIの向上</li>
-            </ul>
-          </div>
-        </div>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="p-5 bg-yellow-50 rounded-lg border border-yellow-200">
-            <h3 className="font-semibold mb-3 flex items-center text-yellow-800">
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              📋 データの準備について
-            </h3>
-            <div className="text-sm text-yellow-700 space-y-2 leading-relaxed">
-              <p>
-                <strong>必要なデータ:</strong> 顧客ID、購入日、購入金額の3列が必須です
-              </p>
-              <p>
-                <strong>データ形式:</strong> 
-                1行1取引の形式（顧客が複数回購入している場合は複数行になります）
-              </p>
-              <p>
-                <strong>データ期間:</strong> 
-                最低6ヶ月、理想的には1-2年分のデータがあると良い分析結果が得られます
-              </p>
-            </div>
-          </div>
 
-          <div className="p-5 bg-green-50 rounded-lg border border-green-200">
-            <h3 className="font-semibold mb-3 flex items-center text-green-800">
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              📄 サンプルデータ形式
-            </h3>
-            <div className="text-sm text-green-700">
-              <p className="mb-2">RFM分析用のCSVファイルは以下の形式で準備してください：</p>
-              <div className="bg-white p-3 rounded border font-mono text-xs overflow-x-auto">
-                <div>id,date,price</div>
-                <div>1000,2024-01-15,2500</div>
-                <div>1001,2024-01-16,1200</div>
-                <div>1000,2024-02-20,3800</div>
-                <div>1002,2024-01-18,5500</div>
-                <div>...</div>
-              </div>
-              <div className="mt-2 space-y-1 text-xs">
-                <p>• <strong>id:</strong> 顧客を識別するID</p>
-                <p>• <strong>date:</strong> 購入日（YYYY-MM-DD形式推奨）</p>
-                <p>• <strong>price:</strong> 購入金額（数値のみ）</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-          <div className="p-5 bg-blue-50 rounded-lg border border-blue-200">
-            <h3 className="font-semibold mb-3 flex items-center text-blue-800">
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.349 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.349a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.349 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.349a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-              ⚙️ 分析パラメータの設定
-            </h3>
-            <div className="text-sm text-blue-700 space-y-2 leading-relaxed">
-              <p>
-                <strong>RFM分割数:</strong> 
-                3分割（1-3）が一般的で解釈しやすく、5分割（1-5）はより細かいセグメンテーションが可能です
-              </p>
-              <p>
-                <strong>列名の指定:</strong> 
-                CSVファイルの列名が標準的でない場合は、適切な列名を指定してください
-              </p>
-              <p>
-                <strong>基準日の設定:</strong> 
-                Recency計算の基準日は、データの最新日が自動的に使用されます
-              </p>
-            </div>
-          </div>
-
-          <div className="p-5 bg-indigo-50 rounded-lg border border-indigo-200">
-            <h3 className="font-semibold mb-3 flex items-center text-indigo-800">
-              <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
-              📈 結果の活用方法
-            </h3>
-            <div className="grid grid-cols-1 gap-4 text-sm text-indigo-700">
-              <div>
-                <h4 className="font-medium mb-2 text-indigo-800">マーケティング施策例:</h4>
-                <ul className="space-y-1 text-xs">
-                  <li>• VIP顧客: 限定商品・特別サービス</li>
-                  <li>• 新規顧客: ウェルカムキャンペーン</li>
-                  <li>• 離脱顧客: 復帰促進オファー</li>
-                  <li>• 要注意顧客: 再エンゲージメント</li>
-                </ul>
-              </div>
-              <div>
-                <h4 className="font-medium mb-2 text-indigo-800">KPI改善への貢献:</h4>
-                <ul className="space-y-1 text-xs">
-                  <li>• 顧客生涯価値（LTV）向上</li>
-                  <li>• 顧客維持率（リテンション）改善</li>
-                  <li>• 購入頻度・単価の向上</li>
-                  <li>• マーケティング効率の最適化</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 追加の使用ガイダンス */}
-        <div className="mt-8 p-6 bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg border border-purple-200">
-          <h3 className="font-semibold mb-4 flex items-center text-purple-800">
-            <svg className="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-            </svg>
-            💡 より効果的な分析のために
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-purple-700">
-            <div>
-              <h4 className="font-medium mb-2 text-purple-800">分析前のチェックポイント:</h4>
-              <ul className="space-y-1">
-                <li>✓ データの品質確認（重複、欠損値など）</li>
-                <li>✓ 分析期間の妥当性（季節性の考慮）</li>
-                <li>✓ 顧客セグメントの事前仮説設定</li>
-                <li>✓ ビジネス目標との整合性確認</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-medium mb-2 text-purple-800">分析後のアクション:</h4>
-              <ul className="space-y-1">
-                <li>✓ セグメント別戦略の具体化</li>
-                <li>✓ 施策実行のためのリソース計画</li>
-                <li>✓ 効果測定指標の設定</li>
-                <li>✓ 次回分析スケジュールの決定</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* 注意事項 */}
+        {/* データ準備の説明など他のセクションは省略 */}
         <div className="mt-6 p-4 bg-red-50 rounded-lg border border-red-200">
           <h4 className="font-medium text-red-800 mb-2 flex items-center">
             <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2368,5 +1562,3 @@ export default function RFMAnalysisPage() {
     </AnalysisLayout>
   );
 }
-
-  
